@@ -22,6 +22,14 @@ async function api(path, options = {}) {
   return data;
 }
 
+function stageClass(stage) {
+  if (!stage) return "bg-secondary";
+  if (String(stage).includes("嚴重")) return "bg-danger";
+  if (stage === "肌少症") return "bg-warning text-dark";
+  if (String(stage).includes("前期")) return "bg-info text-dark";
+  return "bg-success";
+}
+
 function stageBadge(stage) {
   const map = {
     "正常": "badge-normal",
