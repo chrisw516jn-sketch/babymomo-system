@@ -341,6 +341,14 @@ document.getElementById("loginPassword")?.addEventListener("keydown", (e) => {
 });
 
 
+function stageClass(stage) {
+  if (!stage) return "bg-secondary";
+  if (stage.includes("嚴重")) return "bg-danger";
+  if (stage === "肌少症") return "bg-warning text-dark";
+  if (stage.includes("前期")) return "bg-info text-dark";
+  return "bg-success";
+}
+
 // ---------- Alerts 異常通報 ----------
 async function loadAlertCount() {
   try {
@@ -380,6 +388,12 @@ async function loadAlerts() {
       const sevBadge = a.severity === "critical" ? "bg-danger" : a.severity === "warning" ? "bg-warning text-dark" : "bg-info";
       const stageBadge = stageClass(a.sarcopenia_stage);
       const v = a.vitals || {};
+      const g = (v.gender || "").toUpperCase();
+      const gripFail = v.grip_strength != null && ((g === "M" || g === "男") ? v.grip_strength < 28 : (g === "F" || g === "女") ? v.grip_strength < 18 : false);
+      const chairFail = v.chair_stand_time != null && v.chair_stand_time > 12;
+      const walkFail = v.walking_time != null && v.walking_time > 18;
+      const smiFail = v.smi != null && ((g === "M" || g === "男") ? v.smi < 7.0 : (g === "F" || g === "女") ? v.smi < 5.7 : false);
+      const bpFail = v.bp_status && v.bp_status !== "血壓正常" && v.bp_status !== "未量測";
       const handled = a.is_handled
         ? `<span class="badge bg-success">已處理 by ${a.handled_by || "-"}</span>`
         : `<button class="btn btn-sm btn-primary" onclick="handleAlert(${a.id})">標記已關懷處理</button>`;
@@ -391,24 +405,26 @@ async function loadAlerts() {
               <span class="badge ${stageBadge}">${a.sarcopenia_stage || "-"}</span>
               <strong class="ms-1">${a.user_name}</strong>
               <span class="text-muted small">（${a.id_card}）</span>
-              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項</div>
+              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項 · ${v.age != null ? v.age + "歲" : ""}</div>
             </div>
-            <div class="d-flex gap-2">
-              <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})">傳 LINE</button>
+            <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})"><i class="bi bi-line"></i> 傳 LINE</button>
               ${handled}
             </div>
           </div>
           <div class="row g-2 mb-2">
-            ${vitalCard("握力", v.grip_strength, "kg")}
-            ${vitalCard("五次坐站", v.chair_stand_time, "秒")}
-            ${vitalCard("走路時間", v.walking_time, "秒")}
-            ${vitalCard("SMI", v.smi, "")}
-            ${vitalCard("血壓", (v.systolic && v.diastolic) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg")}
-            ${vitalCard("脈搏", v.pulse, "bpm")}
-            ${vitalCard("BMI", v.bmi, "")}
-            ${vitalCard("身高/體重", (v.height || "-") + " / " + (v.weight || "-"), "cm/kg")}
+            ${vitalCard("握力", v.grip_strength, "kg", gripFail)}
+            ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail)}
+            ${vitalCard("走路時間", v.walking_time, "秒", walkFail)}
+            ${vitalCard("SMI", v.smi, "", smiFail)}
+            ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail)}
+            ${vitalCard("血壓狀態", v.bp_status || "-", "", bpFail)}
+            ${vitalCard("脈搏", v.pulse, "bpm", false)}
+            ${vitalCard("BMI", v.bmi, "", false)}
+            ${vitalCard("身高", v.height, "cm", false)}
+            ${vitalCard("體重", v.weight, "kg", false)}
           </div>
-          <div class="small" style="white-space:pre-line">${a.message || ""}</div>
+          <div class="bg-light rounded p-2 small" style="white-space:pre-line">${a.message || ""}</div>
           ${a.handle_note ? `<div class="small text-success mt-2">處理備註：${a.handle_note}</div>` : ""}
         </div>
       </div>`;
@@ -418,9 +434,11 @@ async function loadAlerts() {
   }
 }
 
-function vitalCard(label, value, unit) {
+function vitalCard(label, value, unit, fail) {
   const shown = (value === undefined || value === null || value === "") ? "-" : value;
-  return `<div class="col-6 col-md-3"><div class="metric-card"><div class="text-muted small">${label}</div><div class="fw-semibold">${shown} <span class="small text-muted">${unit || ""}</span></div></div></div>`;
+  const cls = fail ? "metric-card fail" : "metric-card";
+  const lab = fail ? label + " ⚠️" : label;
+  return `<div class="col-6 col-md-3"><div class="${cls}"><div class="text-muted small">${lab}</div><div class="fw-semibold ${fail ? "text-danger" : ""}">${shown} <span class="small text-muted">${unit || ""}</span></div></div></div>`;
 }
 
 async function handleAlert(id) {
