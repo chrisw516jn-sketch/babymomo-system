@@ -3,8 +3,9 @@ let token = localStorage.getItem("babymomo_token") || "";
 let currentUser = null;
 let currentPage = 1;
 let currentCaseId = null;
+let dupPage = 1;
 const PAGE_SIZE = 30;
-const VIEWS = ["dashboard", "cases", "records", "alerts", "import", "report", "users", "settings", "audit", "api"];
+const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "api"];
 
 async function api(path, options = {}) {
   const headers = options.headers || {};
@@ -352,6 +353,48 @@ async function loadRecords() {
 function changePage(delta) {
   currentPage = Math.max(1, currentPage + delta);
   loadRecords();
+}
+
+async function loadDuplicates() {
+  const qEl = document.getElementById("dupQ");
+  const q = qEl ? qEl.value.trim() : "";
+  let url = `/api/duplicates?page=${dupPage}&page_size=${PAGE_SIZE}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("dupBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    (data.items || []).forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.id_card}</td>
+        <td>${r.user_name}</td>
+        <td>${r.gender === "M" ? "男" : "女"} / ${r.age || "-"}</td>
+        <td>${r.measure_time || r.measure_date || "-"}</td>
+        <td>${r.grip_strength != null ? r.grip_strength : "-"}</td>
+        <td>${r.chair_stand_time != null ? r.chair_stand_time : "-"}</td>
+        <td>${r.walking_time != null ? r.walking_time : "-"}</td>
+        <td>${r.smi != null ? r.smi : "-"}</td>
+        <td>${stageBadge(r.sarcopenia_stage)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const totalEl = document.getElementById("dupTotal");
+    if (totalEl) totalEl.textContent = `共 ${data.total} 筆（同一天較舊的資料）`;
+    const badge = document.getElementById("dupBadge");
+    if (badge) {
+      badge.textContent = data.total || 0;
+      badge.style.display = data.total ? "inline" : "none";
+    }
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function changeDupPage(delta) {
+  dupPage = Math.max(1, dupPage + delta);
+  loadDuplicates();
 }
 
 let currentSuggestedRetest = null;

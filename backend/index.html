@@ -100,6 +100,10 @@
         <a class="nav-link" href="#" data-view="records" onclick="showView('records'); return false;">
           <i class="bi bi-table me-2"></i>檢測紀錄
         </a>
+        <a class="nav-link" href="#" data-view="duplicates" onclick="showView('duplicates'); loadDuplicates(); return false;">
+          <i class="bi bi-files me-2"></i>重複資料
+          <span id="dupBadge" class="badge bg-secondary ms-1" style="display:none">0</span>
+        </a>
         <a class="nav-link" href="#" data-view="alerts" onclick="showView('alerts'); return false;">
           <i class="bi bi-bell me-2"></i>異常通報
           <span id="alertBadge" class="badge bg-danger ms-1" style="display:none">0</span>
@@ -274,6 +278,36 @@
               <button class="btn btn-sm btn-outline-secondary" onclick="changePage(-1)">上一頁</button>
               <span class="mx-2" id="pageInfo">1</span>
               <button class="btn btn-sm btn-outline-secondary" onclick="changePage(1)">下一頁</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicates -->
+      <div id="view-duplicates" style="display:none">
+        <div class="alert alert-info small">同一人身分證、同一天若有多筆，檢測紀錄只顯示時間最新的一筆。較舊的資料不會刪除，可在此查詢。</div>
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <input type="text" id="dupQ" class="form-control form-control-sm" style="max-width:200px" placeholder="身分證 / 姓名" />
+          <button class="btn btn-primary btn-sm" onclick="dupPage=1;loadDuplicates()">查詢</button>
+        </div>
+        <div class="card">
+          <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>身分證</th><th>姓名</th><th>性別/年齡</th><th>檢測時間</th>
+                  <th>握力</th><th>坐站</th><th>走路</th><th>SMI</th>
+                  <th>分期</th>
+                </tr>
+              </thead>
+              <tbody id="dupBody"></tbody>
+            </table>
+          </div>
+          <div class="p-2 d-flex justify-content-between small text-muted">
+            <span id="dupTotal">共 0 筆</span>
+            <div>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changeDupPage(-1)">上一頁</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changeDupPage(1)">下一頁</button>
             </div>
           </div>
         </div>
