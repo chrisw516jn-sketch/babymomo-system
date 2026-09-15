@@ -47,17 +47,20 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
-      keep = {"bonnie", "chrisavicii", "l", "nurse1", "care1"}
+           # 僅保留指定帳號；移除舊的預設帳號
+        for old in db.query(User).all():
+            if old.username not in {"bonnie", "chrisavicii", "littlethanks", "nurse1", "care1"}:
+                db.delete(old)
+        db.commit()
 
         defaults = [
             ("bonnie", "Aa960723", "Bonnie (系統管理員)", "superadmin", "Bonnie960723@gmail.com"),
             ("chrisavicii", "Aa0965652118", "Chris (超級管理員)", "superadmin", "chrisw516jn@gmail.com"),
+            ("littlethanks", "Aa0610", "館管理員", "admin", None),
             ("nurse1", "Nurse1234", "護理師小美", "nurse", None),
             ("care1", "Care1234", "照顧服務員小華", "caregiver", None),
         ]
-        allowed = {"bonnie", "chrisavicii", "nurse1", "care1"}
-        for username, pwd, display, role, email in defaults:
-            existing = get_user_by_username(db, username)
+        allowed = {"bonnie", "chrisavicii", "littlethanks", "nurse1", "care1"}
             if existing:
                 existing.hashed_password = get_password_hash(pwd)
                 existing.display_name = display
