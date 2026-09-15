@@ -49,7 +49,7 @@ def on_startup():
     try:
            # 僅保留指定帳號；移除舊的預設帳號
         for old in db.query(User).all():
-            if old.username not in {"bonnie", "chrisavicii", "littlethanks", "nurse1", "care1"}:
+            {"bonnie", "chrisavicii", "littlethanks", "nurse1", "care1"}
                 db.delete(old)
         db.commit()
 
