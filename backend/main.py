@@ -53,7 +53,7 @@ def on_startup():
                 db.delete(old)
         db.commit()
 
-        defaults = [
+               defaults = [
             ("bonnie", "Aa960723", "Bonnie (系統管理員)", "superadmin", "Bonnie960723@gmail.com"),
             ("chrisavicii", "Aa0965652118", "Chris (超級管理員)", "superadmin", "chrisw516jn@gmail.com"),
             ("littlethanks", "Aa0610", "館管理員", "admin", None),
@@ -61,6 +61,8 @@ def on_startup():
             ("care1", "Care1234", "照顧服務員小華", "caregiver", None),
         ]
         allowed = {"bonnie", "chrisavicii", "littlethanks", "nurse1", "care1"}
+        for username, pwd, display, role, email in defaults:
+            existing = get_user_by_username(db, username)
             if existing:
                 existing.hashed_password = get_password_hash(pwd)
                 existing.display_name = display
@@ -77,8 +79,6 @@ def on_startup():
                     is_active=True,
                 ))
         db.commit()
-    finally:
-        db.close()
 
 
 def add_audit(db: Session, operator: str, action: str, details: str = ""):
