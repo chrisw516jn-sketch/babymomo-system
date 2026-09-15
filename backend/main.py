@@ -47,11 +47,7 @@ def on_startup():
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
-        # 僅保留兩個指定管理員；移除舊的預設帳號
-        for old in db.query(User).all():
-            if old.username not in {"bonnie", "chrisavicii", "nurse1", "care1"}:
-                db.delete(old)
-        db.commit()
+      keep = {"bonnie", "chrisavicii", "l", "nurse1", "care1"}
 
         defaults = [
             ("bonnie", "Aa960723", "Bonnie (系統管理員)", "superadmin", "Bonnie960723@gmail.com"),
