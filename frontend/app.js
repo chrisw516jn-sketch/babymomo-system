@@ -281,9 +281,9 @@ async function openCase(idCard) {
     const isMale = p.gender === "M";
     const metrics = [
       { label: "握力", val: latest.grip_strength, unit: "kg", std: isMale ? 28 : 18, higherBetter: true },
-      { label: "五次坐站", val: latest.chair_stand_time, unit: "秒", std: 12, higherBetter: false },
+      { label: "五次坐站", val: latest.chair_stand_time, unit: "次", std: 12, higherBetter: false },
       { label: "走路時間", val: latest.walking_time, unit: "秒", std: 20, higherBetter: false },
-      { label: "SMI", val: latest.smi, unit: "kg/m²", std: isMale ? 7.0 : 5.7, higherBetter: true },
+      { label: "除脂肪量", val: latest.smi, unit: "kg", std: isMale ? 7.0 : 5.7, higherBetter: true },
       { label: "血壓", val: latest.systolic ? `${latest.systolic}/${latest.diastolic || "-"}` : null, unit: "mmHg" },
       { label: "脈搏", val: latest.pulse, unit: "bpm" },
     ];
@@ -503,9 +503,9 @@ async function loadAlerts() {
           </div>
           <div class="row g-2 mb-2">
             ${vitalCard("握力", v.grip_strength, "kg", "≧ " + nrm.grip, v.grip_strength != null && Number(v.grip_strength) < nrm.grip)}
-            ${vitalCard("五次坐站", v.chair_stand_time, "秒", "< " + nrm.chair, v.chair_stand_time != null && Number(v.chair_stand_time) >= nrm.chair)}
+            ${vitalCard("五次坐站", v.chair_stand_time, "次", "< " + nrm.chair, v.chair_stand_time != null && Number(v.chair_stand_time) >= nrm.chair)}
             ${vitalCard("走路時間", v.walking_time, "秒", "< " + nrm.walk, v.walking_time != null && Number(v.walking_time) >= nrm.walk)}
-            ${vitalCard("SMI", v.smi, "", "≧ " + nrm.smi, v.smi != null && Number(v.smi) < nrm.smi)}
+            ${vitalCard("除脂肪量", v.smi, "kg", "≧ " + nrm.smi, v.smi != null && Number(v.smi) < nrm.smi)}
             ${vitalCard("血壓", (v.systolic && v.diastolic) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", nrm.sysLow + "-" + nrm.sysHigh + "/" + nrm.diaLow + "-" + nrm.diaHigh, v.systolic != null && (Number(v.systolic) < nrm.sysLow || Number(v.systolic) > nrm.sysHigh))}
             ${vitalCard("脈搏", v.pulse, "bpm", nrm.pulseLow + "-" + nrm.pulseHigh, v.pulse != null && (Number(v.pulse) < nrm.pulseLow || Number(v.pulse) > nrm.pulseHigh))}
             ${vitalCard("BMI", v.bmi, "", nrm.bmiLow + "～" + nrm.bmiHigh, v.bmi != null && (Number(v.bmi) < nrm.bmiLow || Number(v.bmi) >= nrm.bmiHigh))}
