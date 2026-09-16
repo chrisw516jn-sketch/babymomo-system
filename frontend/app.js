@@ -48,22 +48,25 @@ function alertProfile(a, v) {
   return { gender, age };
 }
 
+const FFM_M = {61:[53,60],62:[52,59],63:[52,58],64:[51,57],65:[50,57],66:[50,56],67:[49,55],68:[48,55],69:[48,54],70:[47,53],71:[46,53],72:[46,52],73:[46,52],74:[46,51],75:[45,51],76:[45,51],77:[45,50],78:[44,50],79:[44,50],80:[44,50],81:[44,50],82:[42,48],83:[37,42],84:[37,42],85:[37,42],86:[42,47],87:[37,42],88:[41,46],89:[44,50],90:[48,54],91:[51,58],92:[55,62],93:[58,66],94:[62,70],95:[65,74],96:[69,78]};
+const FFM_F = {61:[33,35],62:[33,35],63:[33,35],64:[33,35],65:[33,35],66:[33,35],67:[33,35],68:[33,35],69:[33,35],70:[33,35],71:[33,35],72:[33,35],73:[33,35],74:[33,35],75:[31,33],76:[32,34],77:[32,34],78:[33,35],79:[34,36],80:[34,36],81:[33,35],82:[32,34],83:[31,33],84:[33,35],85:[34,36],86:[34,36],87:[34,36],88:[34,36],89:[34,36],90:[34,36],91:[33,35],92:[33,35],93:[33,35],94:[33,35],95:[32,34],96:[32,34]};
+const WALK_M15 = [70,71,74,75,76,80,82,88,89];
+const WALK_F15 = [61,62,63,67,68,69,71,73,75,78,80,81,84,88,89];
+
 function walkCutoff(age, male) {
   const a = age || 70;
-  if (male) {
-    if ([70, 71, 74, 75, 76, 80, 82, 88, 89].includes(a)) return 15;
-    return 20;
-  }
-  if ([61, 62, 63, 67, 68, 69, 71, 73, 75, 78, 80, 81, 84, 88, 89].includes(a)) return 15;
-  return 20;
+  if (male) return WALK_M15.includes(a) ? 15 : 20;
+  return WALK_F15.includes(a) ? 15 : 20;
 }
 
 function ageSexNorm(age, gender) {
   const male = gender === "M";
+  const a = age || 70;
+  const ffm = (male ? FFM_M : FFM_F)[a] || (male ? [44, 50] : [33, 35]);
   return {
     grip: male ? 28 : 18,
     chair: 12,
-    walk: walkCutoff(age, male),
+    walk: walkCutoff(a, male),
     smi: male ? 7.0 : 5.7,
     bmiLow: 18.5,
     bmiHigh: 24,
@@ -73,8 +76,8 @@ function ageSexNorm(age, gender) {
     diaHigh: 80,
     pulseLow: 60,
     pulseHigh: 100,
-    ffmLow: male ? (age >= 83 ? 37 : age >= 80 ? 44 : age >= 70 ? 47 : 50) : (age >= 75 ? 31 : 33),
-    ffmHigh: male ? (age >= 83 ? 42 : age >= 80 ? 50 : age >= 70 ? 53 : 60) : (age >= 75 ? 36 : 35),
+    ffmLow: ffm[0],
+    ffmHigh: ffm[1],
   };
 }
 
@@ -304,7 +307,7 @@ async function openCase(idCard) {
     const isMale = p.gender === "M";
     const metrics = [
       { label: "握力", val: latest.grip_strength, unit: "kg", std: isMale ? 28 : 18, higherBetter: true },
-      { label: "五次坐站", val: latest.chair_stand_time, unit: "次", std: 12, higherBetter: false },
+      { label: "五次坐站", val: latest.chair_stand_time, unit: "秒", std: 12, higherBetter: false },
       { label: "走路時間", val: latest.walking_time, unit: "秒", std: 20, higherBetter: false },
       { label: "除脂肪量", val: latest.smi, unit: "kg", std: isMale ? 7.0 : 5.7, higherBetter: true },
       { label: "血壓", val: latest.systolic ? `${latest.systolic}/${latest.diastolic || "-"}` : null, unit: "mmHg" },
@@ -526,7 +529,7 @@ async function loadAlerts() {
           </div>
           <div class="row g-2 mb-2">
             ${vitalCard("握力", v.grip_strength, "kg", "≧ " + nrm.grip, v.grip_strength != null && Number(v.grip_strength) < nrm.grip)}
-            ${vitalCard("五次坐站", (pickNum(v, ["chair_stand_time","chair_stand","sit_stand","chair_count"]) ?? parseMsgNum(a.message, ["五次坐站","坐站"])), "次", "≧ " + nrm.chair + " 次", null)}
+            ${vitalCard("五次坐站", (pickNum(v, ["chair_stand_time","chair_stand","sit_stand","chair_count"]) ?? parseMsgNum(a.message, ["五次坐站","坐站"])), "秒", "< " + nrm.chair, null)}
             ${vitalCard("走路時間", v.walking_time, "秒", "< " + nrm.walk, v.walking_time != null && Number(v.walking_time) >= nrm.walk)}
             ${vitalCard("除脂肪量", (pickNum(v, ["smi","ffm","fat_free_mass","lean_mass"]) ?? parseMsgNum(a.message, ["除脂肪量","SMI"])), "kg", nrm.ffmLow + "～" + nrm.ffmHigh, null)}
             ${vitalCard("血壓", (v.systolic && v.diastolic) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", nrm.sysLow + "-" + nrm.sysHigh + "/" + nrm.diaLow + "-" + nrm.diaHigh, v.systolic != null && (Number(v.systolic) < nrm.sysLow || Number(v.systolic) > nrm.sysHigh))}
@@ -636,7 +639,7 @@ function vitalCard(label, value, unit, stdText, fail) {
   } else if (stdText) {
     mark = '<span class="badge bg-success ms-1">達標</span>';
   }
-  if (!empty && (label === "五次坐站") && Number(value) < 12) {
+  if (!empty && label === "五次坐站" && Number(value) >= 12) {
     mark = '<span class="badge bg-danger ms-1">未達標</span>';
     border = "border-danger";
   }
