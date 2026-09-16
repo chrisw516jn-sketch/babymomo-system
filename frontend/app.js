@@ -21,13 +21,6 @@ async function api(path, options = {}) {
   if (!res.ok) throw new Error(data.detail || res.statusText || "請求失敗");
   return data;
 }
-function stageClass(stage) {
-  if (!stage) return "bg-secondary";
-  if (String(stage).includes("嚴重")) return "bg-danger";
-  if (stage === "肌少症") return "bg-warning text-dark";
-  if (String(stage).includes("前期")) return "bg-info text-dark";
-  return "bg-success";
-}
 
 function stageClass(stage) {
   if (!stage) return "bg-secondary";
@@ -426,6 +419,7 @@ async function loadAlerts() {
             ${vitalCard("身高/體重", (v.height || "-") + " / " + (v.weight || "-"), "cm/kg")}
           </div>
           <div class="small" style="white-space:pre-line">${a.message || ""}</div>
+          ${renderZhenmaoAdvice(a)}
           ${a.handle_note ? `<div class="small text-success mt-2">處理備註：${a.handle_note}</div>` : ""}
         </div>
       </div>`;
@@ -433,6 +427,80 @@ async function loadAlerts() {
   } catch (e) {
     box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
   }
+}
+
+function renderZhenmaoAdvice(a) {
+  const v = a.vitals || {};
+  const items = zhenmaoAdviceItems(a, v);
+  if (!items.length) return "";
+  const cards = items.map((it) => `
+    <div class="col-12 col-md-6">
+      <div class="border rounded p-2 h-100 bg-light">
+        <div class="fw-semibold">${it.machine}</div>
+        <div class="small text-muted">${it.why}</div>
+        <div class="small mt-1">${it.how}</div>
+      </div>
+    </div>`).join("");
+  return `
+    <div class="mt-3 p-3 rounded" style="background:#f0f7f4;border:1px solid #c5ddd2">
+      <div class="fw-semibold mb-1">真茂科技運動輔具建議</div>
+      <div class="small text-muted mb-2">依本次異常項目對應館內器材。須有人員在旁、以輕負荷為主，有胸悶、暈眩或血壓明顯偏高時停止。</div>
+      <div class="row g-2">${cards}</div>
+    </div>`;
+}
+
+function zhenmaoAdviceItems(a, v) {
+  const stage = a.sarcopenia_stage || "";
+  const msg = (a.message || "") + (a.title || "");
+  const gripLow = /握力/.test(msg) || (v.grip_strength != null && Number(v.grip_strength) < 20);
+  const chairSlow = /坐站/.test(msg) || (v.chair_stand_time != null && Number(v.chair_stand_time) >= 12);
+  const walkSlow = /走路|步速/.test(msg) || (v.walking_time != null && Number(v.walking_time) >= 20);
+  const smiLow = /SMI/.test(msg) || (v.smi != null && Number(v.smi) < 7);
+  const highBp = /血壓偏高|血壓異常/.test(msg) || (v.systolic != null && Number(v.systolic) >= 160);
+  const severe = String(stage).includes("嚴重") || a.severity === "critical";
+  const sets = severe ? "1 組 × 6～8 下" : "1～2 組 × 8～12 下";
+  const pace = "節奏放慢、吐氣出力、不要憋氣。感覺還能再做 3 下再停。";
+  const out = [];
+  if (gripLow || smiLow || /肌少/.test(stage) || /上肢|握力/.test(msg)) {
+    out.push({
+      machine: "划船健身機",
+      why: "改善上背與握力，對握力不足、肌少分期較有幫助。",
+      how: `${sets}。雙手輕握把手、背部打直，往胸口方向拉。${pace}`,
+    });
+    out.push({
+      machine: "擴胸蝴蝶機",
+      why: "訓練胸肌與上肢推的力量，協助維持上半身肌量。",
+      how: `${sets}。雙手打開再往中間合攏，肩頸放鬆。${pace}`,
+    });
+    out.push({
+      machine: "上臂肩推機",
+      why: "強化肩膀與上臂，日常舉手、拿物品較穩。",
+      how: highBp
+        ? "血壓偏高時先不做肩推，改用划船或蝴蝶機輕負荷。"
+        : `${sets}。座椅調到手肘約與肩同高，向上推到快伸直即停。${pace}`,
+    });
+  }
+  if (chairSlow || walkSlow || smiLow || /肌少/.test(stage)) {
+    out.push({
+      machine: "蹬腿機",
+      why: "強化大腿與臀部，對坐站偏慢、步速偏慢最直接。",
+      how: `${sets}。雙腳與肩同寬，膝蓋朝腳尖方向，不要完全鎖死。${pace}`,
+    });
+    out.push({
+      machine: "屈伸腿機",
+      why: "訓練大腿前側／後側，協助站起、上下階與走路穩定。",
+      how: `${sets}。先做伸腿再做屈腿，活動到舒適角度即可。${pace}`,
+    });
+  }
+  if (!out.length) {
+    out.push({
+      machine: "划船健身機 + 蹬腿機",
+      why: "本次異常較輕，以上下肢各一項維持肌力即可。",
+      how: `各 ${sets}。${pace}`,
+    });
+  }
+  const seen = new Set();
+  return out.filter((x) => (seen.has(x.machine) ? false : seen.add(x.machine)));
 }
 
 function vitalCard(label, value, unit) {
