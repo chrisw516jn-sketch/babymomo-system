@@ -2,6 +2,7 @@ const API = "";  // same origin
 let token = localStorage.getItem("babymomo_token") || "";
 let currentUser = null;
 let currentPage = 1;
+let dupPage = 1;
 const PAGE_SIZE = 30;
 
 // ---------- helpers ----------
@@ -19,6 +20,14 @@ async function api(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || res.statusText || "請求失敗");
   return data;
+}
+
+function stageClass(stage) {
+  if (!stage) return "bg-secondary";
+  if (String(stage).includes("嚴重")) return "bg-danger";
+  if (stage === "肌少症") return "bg-warning text-dark";
+  if (String(stage).includes("前期")) return "bg-info text-dark";
+  return "bg-success";
 }
 
 function stageBadge(stage) {
@@ -104,12 +113,13 @@ function enterApp() {
 
 // ---------- Views ----------
 function showView(name) {
-  ["dashboard", "records", "alerts", "import", "api"].forEach((v) => {
+  ["dashboard", "records", "duplicates", "alerts", "import", "api"].forEach((v) => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = v === name ? "block" : "none";
   });
   document.querySelectorAll(".sidebar .nav-link").forEach((a) => a.classList.remove("active"));
   if (name === "records") loadRecords();
+  if (name === "duplicates") loadDuplicates();
   if (name === "alerts") loadAlerts();
 }
 
@@ -458,3 +468,30 @@ async function sendLineTest() {
     if (box) box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
   }
 }
+
+
+async function loadDuplicates() {
+  const qEl = document.getElementById("dupQ");
+  const q = qEl ? qEl.value.trim() : "";
+  let url = "/api/duplicates?page=" + dupPage + "&page_size=50";
+  if (q) url += "&q=" + encodeURIComponent(q);
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("dupBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    (data.items || []).forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = "<td>" + (r.id_card||"") + "</td><td>" + (r.user_name||"") + "</td><td>" +
+        (r.gender==="M"?"男":"女") + " / " + (r.age||"-") + "</td><td>" + (r.measure_time||r.measure_date||"-") +
+        "</td><td>" + (r.grip_strength!=null?r.grip_strength:"-") + "</td><td>" +
+        (r.chair_stand_time!=null?r.chair_stand_time:"-") + "</td><td>" +
+        (r.walking_time!=null?r.walking_time:"-") + "</td><td>" + (r.smi!=null?r.smi:"-") +
+        "</td><td>" + (r.sarcopenia_stage||"-") + "</td>";
+      tbody.appendChild(tr);
+    });
+    const el = document.getElementById("dupTotal");
+    if (el) el.textContent = "共 " + (data.total||0) + " 筆（同一天較舊的資料）";
+  } catch (e) { alert(e.message); }
+}
+
