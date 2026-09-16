@@ -417,9 +417,52 @@ async function loadAlertCount() {
   }
 }
 
+function ensureAlertSearchBar() {
+  if (document.getElementById("alertQ")) return;
+  const cb = document.getElementById("alertOnlyUnhandled");
+  const view = document.getElementById("view-alerts");
+  if (!view || !cb) return;
+  const bar = document.createElement("span");
+  bar.className = "d-inline-flex flex-wrap gap-2 align-items-center";
+  bar.innerHTML = `
+    <input type="text" id="alertQ" class="form-control form-control-sm" style="max-width:180px" placeholder="身分證 / 姓名" />
+    <input type="date" id="alertStart" class="form-control form-control-sm" style="max-width:140px" />
+    <input type="date" id="alertEnd" class="form-control form-control-sm" style="max-width:140px" />
+    <select id="alertStage" class="form-select form-select-sm" style="max-width:140px">
+      <option value="">全部分期</option>
+      <option>正常</option><option>肌少症前期</option><option>肌少症</option><option>嚴重肌少症</option>
+    </select>
+    <button class="btn btn-primary btn-sm" type="button" id="alertSearchBtn">查詢</button>
+  `;
+  cb.parentElement.insertAdjacentElement("beforebegin", bar);
+  document.getElementById("alertSearchBtn").onclick = () => loadAlerts();
+  document.getElementById("alertQ").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadAlerts();
+  });
+}
+
+function filterAlertItems(items) {
+  const q = (document.getElementById("alertQ")?.value || "").trim().toLowerCase();
+  const start = document.getElementById("alertStart")?.value || "";
+  const end = document.getElementById("alertEnd")?.value || "";
+  const stage = document.getElementById("alertStage")?.value || "";
+  return (items || []).filter((a) => {
+    if (q) {
+      const blob = `${a.user_name || ""} ${a.id_card || ""} ${a.message || ""}`.toLowerCase();
+      if (!blob.includes(q)) return false;
+    }
+    if (stage && String(a.sarcopenia_stage || "") !== stage) return false;
+    const dt = String(a.created_at || a.measure_time || "").slice(0, 10);
+    if (start && dt && dt < start) return false;
+    if (end && dt && dt > end) return false;
+    return true;
+  });
+}
+
 async function loadAlerts() {
+  ensureAlertSearchBar();
   const onlyUnhandled = document.getElementById("alertOnlyUnhandled")?.checked;
-  let url = "/api/alerts?page_size=100";
+  let url = "/api/alerts?page_size=200";
   if (onlyUnhandled) url += "&only_unhandled=true";
   const box = document.getElementById("alertsList");
   if (!box) return;
@@ -427,11 +470,12 @@ async function loadAlerts() {
   try {
     const data = await api(url);
     loadAlertCount();
-    if (!data.items || data.items.length === 0) {
-      box.innerHTML = '<div class="alert alert-success">目前沒有異常通報。</div>';
+    const items = filterAlertItems(data.items || []);
+    if (!items.length) {
+      box.innerHTML = '<div class="alert alert-success">沒有符合查詢的異常通報。</div>';
       return;
     }
-    box.innerHTML = data.items.map((a) => {
+    box.innerHTML = items.map((a) => {
       const sevClass = a.severity === "critical" ? "border-danger" : a.severity === "warning" ? "border-warning" : "border-info";
       const sevBadge = a.severity === "critical" ? "bg-danger" : a.severity === "warning" ? "bg-warning text-dark" : "bg-info";
       const stageBadge = stageClass(a.sarcopenia_stage);
