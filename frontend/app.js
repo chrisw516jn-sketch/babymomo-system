@@ -73,7 +73,30 @@ function ageSexNorm(age, gender) {
     diaHigh: 80,
     pulseLow: 60,
     pulseHigh: 100,
+    ffmLow: male ? (age >= 83 ? 37 : age >= 80 ? 44 : age >= 70 ? 47 : 50) : (age >= 75 ? 31 : 33),
+    ffmHigh: male ? (age >= 83 ? 42 : age >= 80 ? 50 : age >= 70 ? 53 : 60) : (age >= 75 ? 36 : 35),
   };
+}
+
+function pickNum(obj, keys) {
+  if (!obj) return null;
+  for (const k of keys) {
+    const val = obj[k];
+    if (val !== undefined && val !== null && val !== "" && val !== "-") {
+      const n = Number(val);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+  return null;
+}
+
+function parseMsgNum(msg, labels) {
+  const text = String(msg || "");
+  for (const lab of labels) {
+    const m = text.match(new RegExp(lab + "[：:\\s]+([0-9]+(?:\\.[0-9]+)?)"));
+    if (m) return Number(m[1]);
+  }
+  return null;
 }
 
 function stageBadge(stage) {
@@ -503,9 +526,9 @@ async function loadAlerts() {
           </div>
           <div class="row g-2 mb-2">
             ${vitalCard("握力", v.grip_strength, "kg", "≧ " + nrm.grip, v.grip_strength != null && Number(v.grip_strength) < nrm.grip)}
-            ${vitalCard("五次坐站", v.chair_stand_time, "次", "< " + nrm.chair, v.chair_stand_time != null && Number(v.chair_stand_time) >= nrm.chair)}
+            ${vitalCard("五次坐站", (pickNum(v, ["chair_stand_time","chair_stand","sit_stand","chair_count"]) ?? parseMsgNum(a.message, ["五次坐站","坐站"])), "次", "≧ " + nrm.chair + " 次", null)}
             ${vitalCard("走路時間", v.walking_time, "秒", "< " + nrm.walk, v.walking_time != null && Number(v.walking_time) >= nrm.walk)}
-            ${vitalCard("除脂肪量", v.smi, "kg", "≧ " + nrm.smi, v.smi != null && Number(v.smi) < nrm.smi)}
+            ${vitalCard("除脂肪量", (pickNum(v, ["smi","ffm","fat_free_mass","lean_mass"]) ?? parseMsgNum(a.message, ["除脂肪量","SMI"])), "kg", nrm.ffmLow + "～" + nrm.ffmHigh, null)}
             ${vitalCard("血壓", (v.systolic && v.diastolic) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", nrm.sysLow + "-" + nrm.sysHigh + "/" + nrm.diaLow + "-" + nrm.diaHigh, v.systolic != null && (Number(v.systolic) < nrm.sysLow || Number(v.systolic) > nrm.sysHigh))}
             ${vitalCard("脈搏", v.pulse, "bpm", nrm.pulseLow + "-" + nrm.pulseHigh, v.pulse != null && (Number(v.pulse) < nrm.pulseLow || Number(v.pulse) > nrm.pulseHigh))}
             ${vitalCard("BMI", v.bmi, "", nrm.bmiLow + "～" + nrm.bmiHigh, v.bmi != null && (Number(v.bmi) < nrm.bmiLow || Number(v.bmi) >= nrm.bmiHigh))}
@@ -599,9 +622,33 @@ function zhenmaoAdviceItems(a, v) {
 }
 
 function vitalCard(label, value, unit, stdText, fail) {
-  const shown = (value === undefined || value === null || value === "") ? "-" : value;
-  const border = fail ? "border-danger" : "";
-  const mark = fail ? '<span class="badge bg-danger ms-1">未達標</span>' : (stdText ? '<span class="badge bg-success ms-1">達標</span>' : "");
+  const empty = (value === undefined || value === null || value === "" || value === "-");
+  const shown = empty ? "無資料" : value;
+  let mark = "";
+  let border = "";
+  if (!empty && fail === true) {
+    mark = '<span class="badge bg-danger ms-1">未達標</span>';
+    border = "border-danger";
+  } else if (!empty && fail === false) {
+    mark = '<span class="badge bg-success ms-1">達標</span>';
+  } else if (empty) {
+    mark = '<span class="badge bg-secondary ms-1">無資料</span>';
+  } else if (stdText) {
+    mark = '<span class="badge bg-success ms-1">達標</span>';
+  }
+  if (!empty && (label === "五次坐站") && Number(value) < 12) {
+    mark = '<span class="badge bg-danger ms-1">未達標</span>';
+    border = "border-danger";
+  }
+  if (!empty && label === "除脂肪量") {
+    const n = Number(value);
+    const low = Number(String(stdText).split("～")[0]);
+    const high = Number(String(stdText).split("～")[1]);
+    if (low && n < low) {
+      mark = '<span class="badge bg-danger ms-1">未達標</span>';
+      border = "border-danger";
+    }
+  }
   return `<div class="col-6 col-md-3"><div class="metric-card ${border}"><div class="text-muted small">${label} ${mark}</div><div class="fw-semibold">${shown} <span class="small text-muted">${unit || ""}</span></div>${stdText ? `<div class="small text-muted">標準 ${stdText}</div>` : ""}</div></div>`;
 }
 
