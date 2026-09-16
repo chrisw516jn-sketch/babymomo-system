@@ -21,6 +21,13 @@ async function api(path, options = {}) {
   if (!res.ok) throw new Error(data.detail || res.statusText || "請求失敗");
   return data;
 }
+function stageClass(stage) {
+  if (!stage) return "bg-secondary";
+  if (String(stage).includes("嚴重")) return "bg-danger";
+  if (stage === "肌少症") return "bg-warning text-dark";
+  if (String(stage).includes("前期")) return "bg-info text-dark";
+  return "bg-success";
+}
 
 function stageClass(stage) {
   if (!stage) return "bg-secondary";
