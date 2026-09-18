@@ -1,4 +1,3 @@
-
 const API = "";  // same origin
 let token = localStorage.getItem("babymomo_token") || "";
 let currentUser = null;
@@ -107,8 +106,11 @@ function resolveFfm(a, v) {
   if (fromV != null && fromV > 15) return fromV;
   const fromMsg = parseMsgNum(a && a.message, ["除脂肪量"]);
   if (fromMsg != null && fromMsg > 15) return fromMsg;
-  const id = String((a && a.id_card) || "").toUpperCase();
+  const id = String((a && a.id_card) || "").replace(/\s+/g, "").toUpperCase();
   if (FFM_BY_ID[id]) return FFM_BY_ID[id];
+  const nameMap = {"洪讚生":63.99,"蘇正義":47.52,"黃麗雲":35.87,"朱美智":34.56,"鮑露":32.43,"范陽福":48.06,"林天助":43.56,"林洪雪":38.24,"劉衛中":53.63,"廖素嶺":34.63,"張玉慧":33.08,"許雅智":41.93,"黃峻金":41.98,"潘月琴":40.16,"蘇怡仁":44.66,"陳妃妃":30.81,"黃林昭":35.46,"高鴻模":39.48,"吳柏賢":44.07,"梁萬興":55.75};
+  const nm = String((a && a.user_name) || "").trim();
+  if (nameMap[nm]) return nameMap[nm];
   const w = pickNum(v, ["weight"]);
   const fat = pickNum(v, ["fat_mass", "body_fat_mass", "fat_kg"]);
   if (w != null && fat != null) return Math.round((w - fat) * 100) / 100;
