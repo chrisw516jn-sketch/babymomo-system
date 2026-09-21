@@ -377,11 +377,13 @@ async function openCase(idCard) {
       `${p.id_card} · ${p.gender === "M" ? "男" : "女"} · ${p.age || "-"}歲 · 身高 ${p.height || "-"}cm · 體重 ${p.weight || "-"}kg · BMI ${p.bmi || "-"} · 共 ${data.total_records} 筆紀錄`;
 
     const isMale = p.gender === "M";
+    const nrm = ageSexNorm(p.age, p.gender);
+    const ffmVal = resolveFfm({ id_card: p.id_card, user_name: p.user_name }, latest);
     const metrics = [
       { label: "握力", val: latest.grip_strength, unit: "kg", std: isMale ? 28 : 18, higherBetter: true },
       { label: "五次坐站", val: latest.chair_stand_time, unit: "秒", std: 12, higherBetter: false },
-      { label: "走路時間", val: latest.walking_time, unit: "秒", std: 20, higherBetter: false },
-      { label: "除脂肪量", val: latest.smi, unit: "kg", std: isMale ? 7.0 : 5.7, higherBetter: true },
+      { label: "走路時間", val: latest.walking_time, unit: "秒", std: nrm.walk, higherBetter: false },
+      { label: "除脂肪量", val: ffmVal, unit: "kg", std: nrm.ffmLow, higherBetter: true },
       { label: "血壓", val: latest.systolic ? `${latest.systolic}/${latest.diastolic || "-"}` : null, unit: "mmHg" },
       { label: "脈搏", val: latest.pulse, unit: "bpm" },
     ];
