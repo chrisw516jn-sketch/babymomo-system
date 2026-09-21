@@ -21,12 +21,20 @@ except Exception:
     pass
 
 from database import engine, get_db, Base
-from models import User, Measurement, AuditLog, Alert, CareNote, SystemConfig, Feedback
+from models import User, Measurement, AuditLog, Alert, CareNote, SystemConfig
+try:
+    from models import Feedback
+except Exception:
+    Feedback = None
 from schemas import (
     UserCreate, UserUpdate, UserOut, Token, MeasurementCreate, MeasurementOut,
     StatsOut, ImportResult, CareNoteCreate, CareNoteOut, ThresholdsOut,
-    FeedbackCreate, FeedbackOut,
 )
+try:
+    from schemas import FeedbackCreate, FeedbackOut
+except Exception:
+    FeedbackCreate = None
+    FeedbackOut = None
 from auth import (
     get_password_hash, verify_password, create_access_token,
     get_current_user, require_roles, get_user_by_username, ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -34,10 +42,20 @@ from auth import (
 from utils import (
     calc_bmi, judge_sarcopenia, normalize_measure_time, format_alert_message,
     bp_status, get_exercise_advice, suggested_retest_date, get_intervention_plan,
-    get_default_equipment_catalog,
 )
+try:
+    from utils import get_default_equipment_catalog
+except Exception:
+    def get_default_equipment_catalog():
+        return []
 from line_notify import send_line_text, line_configured
-from standards import compare_to_standards, walking_threshold
+try:
+    from standards import compare_to_standards, walking_threshold
+except Exception:
+    def walking_threshold(*args, **kwargs):
+        return 20.0
+    def compare_to_standards(*args, **kwargs):
+        return {}
 
 app = FastAPI(
     title="寶貝機 長者體適能與肌少衰弱檢測分析系統 API",
@@ -1783,8 +1801,11 @@ def api_standards(
     current_user: User = Depends(get_current_user),
 ):
     """查詢指定年齡性別的標準值表。"""
-    from standards import get_standards
-    std = get_standards(age, gender)
+    try:
+        from standards import get_standards
+        std = get_standards(age, gender)
+    except Exception:
+        std = None
     if not std:
         raise HTTPException(404, "找不到對應標準值")
     return std
@@ -1797,6 +1818,8 @@ def submit_feedback(
     current_user: User = Depends(get_current_user),
 ):
     """意見／錯誤回饋：寫入資料庫並推播到既有官方 LINE。"""
+    if Feedback is None:
+        raise HTTPException(500, "Feedback 資料表尚未部署，請上傳最新 models.py")
     cat = (payload.category or "suggestion").strip().lower()
     if cat not in ("suggestion", "bug", "other"):
         cat = "other"
@@ -1857,6 +1880,8 @@ def list_feedback(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("superadmin", "admin")),
 ):
+    if Feedback is None:
+        raise HTTPException(500, "Feedback 資料表尚未部署，請上傳最新 models.py")
     q = db.query(Feedback)
     if category:
         q = q.filter(Feedback.category == category)
