@@ -554,58 +554,105 @@ async function openCase(idCard) {
 
     
     const hist = [...data.history].reverse();
+    const dates = hist.map((h) => (h.measure_date || "").slice(5) || h.measure_time || "-");
+    const gripStd = isMale ? 28 : 18;
+    const smiStd = isMale ? 7.0 : 5.7;
+
+    function renderMetricChart(elId, title, values, unit, color, std, higherBetter) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const chart = echarts.getInstanceByDom(el) || echarts.init(el);
+      const nums = values.map((v) => (v == null || v === "" ? null : Number(v)));
+      const latestVal = [...nums].reverse().find((v) => v != null);
+      const pass = latestVal == null || std == null ? null : (higherBetter ? latestVal >= std : latestVal < std);
+      chart.setOption({
+        title: {
+          text: title,
+          subtext: latestVal == null ? "尚無資料" : (`最新 ${latestVal} ${unit}` + (pass == null ? "" : (pass ? " · 達標" : " · 未達標"))),
+          left: 8,
+          top: 2,
+          textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
+          subtextStyle: { fontSize: 11, color: pass === false ? "#dc2626" : "#0f766e" },
+        },
+        tooltip: { trigger: "axis" },
+        grid: { left: 44, right: 16, top: 48, bottom: 28 },
+        xAxis: {
+          type: "category",
+          data: dates,
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: "#e2e8f0" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+        },
+        yAxis: {
+          type: "value",
+          name: unit,
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+        },
+        series: [{
+          type: hist.length <= 1 ? "bar" : "line",
+          data: nums,
+          barMaxWidth: 36,
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 8,
+          lineStyle: { width: 3, color },
+          itemStyle: { color, borderRadius: [6, 6, 0, 0] },
+          areaStyle: hist.length > 1 ? { color: color + "22" } : undefined,
+          markLine: std != null ? {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", color: "#94a3b8" },
+            label: { formatter: `標準 ${std}`, fontSize: 10, color: "#64748b" },
+            data: [{ yAxis: std }],
+          } : undefined,
+        }],
+      }, true);
+      window.addEventListener("resize", () => chart.resize());
+    }
+
+    renderMetricChart("caseChartGrip", "握力", hist.map((h) => h.grip_strength), "kg", "#2bb8a8", gripStd, true);
+    renderMetricChart("caseChartChair", "五次坐站", hist.map((h) => h.chair_stand_time), "秒", "#f08a4b", 12, false);
+    renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
+    renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
+
     const caseEl = document.getElementById("caseTrendChart");
     const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
+    const g = latest.grip_strength != null ? Number(latest.grip_strength) : 0;
+    const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : 0;
+    const w = latest.walking_time != null ? Number(latest.walking_time) : 0;
+    const sm = latest.smi != null ? Number(latest.smi) : 0;
+    const gripPct = Math.max(0, Math.min(100, gripStd ? (g / gripStd) * 100 : 0));
+    const chairPct = c ? Math.max(0, Math.min(100, (12 / Math.max(c, 0.1)) * 100)) : 0;
+    const walkPct = w ? Math.max(0, Math.min(100, (20 / Math.max(w, 0.1)) * 100)) : 0;
+    const smiPct = Math.max(0, Math.min(100, smiStd ? (sm / smiStd) * 100 : 0));
     chart.setOption({
-      color: ["#3b82f6", "#f59e0b", "#8b5cf6", "#10b981"],
-      tooltip: {
-        trigger: "axis",
-        backgroundColor: "rgba(15,23,42,.92)",
-        borderWidth: 0,
-        textStyle: { color: "#fff", fontSize: 12 },
+      title: { text: "最新檢測達標程度（相對標準）", left: 8, top: 4, textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 } },
+      radar: {
+        indicator: [
+          { name: "握力", max: 120 },
+          { name: "坐站", max: 120 },
+          { name: "走路", max: 120 },
+          { name: "SMI", max: 120 },
+        ],
+        center: ["50%", "56%"],
+        radius: "58%",
+        splitNumber: 4,
+        axisName: { color: "#64748b", fontSize: 12 },
+        splitLine: { lineStyle: { color: "#e2e8f0" } },
+        splitArea: { areaStyle: { color: ["#f8fffd", "#ffffff"] } },
       },
-      legend: {
-        data: ["握力 kg", "坐站 秒", "走路 秒", "SMI"],
-        top: 0,
-        textStyle: { fontSize: 12, color: "#475569" },
-      },
-      grid: { left: 44, right: 20, top: 36, bottom: 28 },
-      xAxis: {
-        type: "category",
-        data: hist.map((h) => h.measure_date),
-        axisLine: { lineStyle: { color: "#e2e8f0" } },
-        axisLabel: { color: "#64748b", fontSize: 11 },
-        axisTick: { show: false },
-      },
-      yAxis: {
-        type: "value",
-        splitLine: { lineStyle: { color: "#f1f5f9", type: "dashed" } },
-        axisLabel: { color: "#64748b" },
-      },
-      series: [
-        {
-          name: "握力 kg", type: "line", smooth: true, symbol: "circle", symbolSize: 8,
-          data: hist.map((h) => h.grip_strength),
-          lineStyle: { width: 3 },
-          areaStyle: { color: "rgba(59,130,246,.12)" },
-        },
-        {
-          name: "坐站 秒", type: "line", smooth: true, symbol: "circle", symbolSize: 7,
-          data: hist.map((h) => h.chair_stand_time),
-          lineStyle: { width: 2 },
-        },
-        {
-          name: "走路 秒", type: "line", smooth: true, symbol: "circle", symbolSize: 7,
-          data: hist.map((h) => h.walking_time),
-          lineStyle: { width: 2 },
-        },
-        {
-          name: "SMI", type: "line", smooth: true, symbol: "diamond", symbolSize: 8,
-          data: hist.map((h) => h.smi),
-          lineStyle: { width: 2 },
-        },
-      ],
+      tooltip: { formatter: () => `握力 ${g} kg<br/>坐站 ${c} 秒<br/>走路 ${w} 秒<br/>SMI ${sm}` },
+      series: [{
+        type: "radar",
+        data: [
+          { value: [100, 100, 100, 100], name: "標準", lineStyle: { type: "dashed", color: "#94a3b8" }, itemStyle: { color: "#94a3b8" }, areaStyle: { color: "rgba(148,163,184,.08)" } },
+          { value: [gripPct, chairPct, walkPct, smiPct], name: "本案", lineStyle: { color: "#2bb8a8", width: 2 }, itemStyle: { color: "#2bb8a8" }, areaStyle: { color: "rgba(43,184,168,.25)" } },
+        ],
+      }],
     }, true);
+    window.addEventListener("resize", () => chart.resize());
 
     // 運動／復健建議
     const adv = data.exercise_advice;
