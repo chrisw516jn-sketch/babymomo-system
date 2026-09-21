@@ -35,12 +35,20 @@
     .sidebar .nav-link.active, .sidebar .nav-link:hover { background: #eff6ff; color: #1e40af; }
     .main-content { flex: 1; padding: 1.5rem; }
     .table th { font-size: .8rem; white-space: nowrap; }
-    #casePanel { display: none; }
+    #casePanel { display: none; border-radius: 16px; }
+    .quick-bar { background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:12px 16px; }
+    .chip-btn { border:1px solid #93c5fd; color:#1d4ed8; background:#eff6ff; border-radius:999px; padding:4px 12px; font-size:13px; }
+    .chip-btn:hover { background:#dbeafe; }
+    .avatar-lg { width:56px; height:56px; border-radius:50%; background:#1e3a8a; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; }
+    .photo-metric { background:#fafafa; border:1px solid #e5e7eb; border-radius:12px; padding:14px 16px; min-height:110px; }
+    .photo-metric .val { font-size:1.65rem; font-weight:800; letter-spacing:-.02em; }
+    .case-card { border-radius: 12px; border: 1px solid #e2e8f0; background: #fff; transition: .15s; cursor: pointer; }
+    .case-card:hover { border-color: #93c5fd; box-shadow: 0 4px 12px rgba(30,58,138,.12); }
+    .case-card.need-care { border-left: 4px solid #ef4444; }
   </style>
 </head>
 <body>
 
-<!-- ========== 登入遮罩 ========== -->
 <div id="authOverlay">
   <div class="auth-card bg-white">
     <div class="auth-header">
@@ -65,7 +73,6 @@
   </div>
 </div>
 
-<!-- ========== 主介面 ========== -->
 <div id="app" style="display:none">
   <nav class="navbar navbar-dark navbar-custom px-3">
     <span class="navbar-brand mb-0 h1 fs-5">
@@ -82,27 +89,45 @@
   </nav>
 
   <div class="d-flex">
-    <!-- Sidebar -->
     <aside class="sidebar d-none d-md-block py-3">
       <nav class="nav flex-column">
-        <a class="nav-link active" href="#" onclick="showView('dashboard'); return false;">
+        <a class="nav-link active" href="#" data-view="dashboard" onclick="showView('dashboard'); return false;">
           <i class="bi bi-speedometer2 me-2"></i>儀表板
         </a>
-        <a class="nav-link" href="#" onclick="showView('records'); return false;">
+        <a class="nav-link" href="#" data-view="cases" onclick="showView('cases'); return false;">
+          <i class="bi bi-people me-2"></i>個案總覽
+        </a>
+        <a class="nav-link" href="#" data-view="records" onclick="showView('records'); return false;">
           <i class="bi bi-table me-2"></i>檢測紀錄
         </a>
         <a class="nav-link" href="#" data-view="duplicates" onclick="showView('duplicates'); loadDuplicates(); return false;">
           <i class="bi bi-files me-2"></i>重複資料
+          <span id="dupBadge" class="badge bg-secondary ms-1" style="display:none">0</span>
         </a>
-        <a class="nav-link" href="#" onclick="showView('alerts'); return false;">
+        <a class="nav-link" href="#" data-view="alerts" onclick="showView('alerts'); return false;">
           <i class="bi bi-bell me-2"></i>異常通報
           <span id="alertBadge" class="badge bg-danger ms-1" style="display:none">0</span>
         </a>
-        <a class="nav-link" href="#" onclick="showView('import'); return false;">
+        <a class="nav-link" href="#" data-view="import" onclick="showView('import'); return false;">
           <i class="bi bi-cloud-upload me-2"></i>匯入資料
         </a>
-        <a class="nav-link" href="#" onclick="showView('api'); return false;">
+        <a class="nav-link" href="#" data-view="report" onclick="showView('report'); return false;">
+          <i class="bi bi-file-earmark-bar-graph me-2"></i>期間報表
+        </a>
+        <a class="nav-link admin-only" href="#" data-view="users" onclick="showView('users'); return false;">
+          <i class="bi bi-person-gear me-2"></i>帳號管理
+        </a>
+        <a class="nav-link admin-only" href="#" data-view="settings" onclick="showView('settings'); return false;">
+          <i class="bi bi-sliders me-2"></i>門檻設定
+        </a>
+        <a class="nav-link admin-only" href="#" data-view="audit" onclick="showView('audit'); return false;">
+          <i class="bi bi-journal-text me-2"></i>操作日誌
+        </a>
+        <a class="nav-link" href="#" data-view="api" onclick="showView('api'); return false;">
           <i class="bi bi-code-slash me-2"></i>API 說明
+        </a>
+        <a class="nav-link" href="#" data-view="feedback" onclick="showView('feedback'); return false;">
+          <i class="bi bi-chat-heart me-2"></i>意見／錯誤回饋
         </a>
         <hr class="mx-3" />
         <a class="nav-link" href="/api/docs" target="_blank">
@@ -114,6 +139,12 @@
     <main class="main-content">
       <!-- Dashboard -->
       <div id="view-dashboard">
+        <div class="quick-bar mb-3">
+          <div class="small text-muted mb-2">點擊快速調閱個案趨勢：</div>
+          <div id="quickCaseChips" class="d-flex flex-wrap gap-2">
+            <span class="text-muted small">匯入資料後會出現個案按鈕</span>
+          </div>
+        </div>
         <div class="d-flex flex-wrap gap-2 mb-3 align-items-end">
           <div>
             <label class="form-label small mb-0">起始日期</label>
@@ -124,60 +155,113 @@
             <input type="date" id="statEnd" class="form-control form-control-sm" />
           </div>
           <button class="btn btn-primary btn-sm" onclick="loadStats()">更新統計</button>
-          <button class="btn btn-outline-secondary btn-sm" onclick="setRange(90)">近90天</button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="setRangePreset('week')">本週</button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="setRangePreset('month')">本月</button>
           <button class="btn btn-outline-secondary btn-sm" onclick="setRange(30)">近30天</button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="setRange(90)">近90天</button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="setRangePreset('year')">本年</button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="setRangePreset('all')">全部</button>
         </div>
-
-        <div class="row g-3 mb-4" id="statCards">
+        <div class="row g-3 mb-4">
           <div class="col-6 col-md-3"><div class="stat-card card p-3"><div class="text-muted small">檢測總次數</div><div class="fs-3 fw-bold" id="sTotal">-</div></div></div>
           <div class="col-6 col-md-3"><div class="stat-card card p-3"><div class="text-muted small">列冊長者</div><div class="fs-3 fw-bold" id="sUsers">-</div></div></div>
           <div class="col-6 col-md-3"><div class="stat-card card p-3"><div class="text-muted small">平均握力</div><div class="fs-3 fw-bold" id="sGrip">-</div></div></div>
           <div class="col-6 col-md-3"><div class="stat-card card p-3"><div class="text-muted small">多重異常率</div><div class="fs-3 fw-bold" id="sMulti">-</div></div></div>
         </div>
-
         <div class="alert alert-info small" id="summaryText">載入中...</div>
-
-        <div class="row g-3">
-          <div class="col-md-5">
-            <div class="card p-3">
-              <h6 class="fw-bold mb-3">肌少症分期分布</h6>
-              <div id="pieChart" style="height:280px"></div>
-            </div>
+        <!-- 複檢提醒 -->
+        <div class="card mb-3 border-warning" id="reminderCard" style="display:none">
+          <div class="card-header bg-warning-subtle d-flex justify-content-between align-items-center py-2">
+            <strong><i class="bi bi-calendar-check me-1"></i>複檢／追蹤提醒</strong>
+            <span class="badge bg-danger" id="reminderOverdue">0 筆逾期</span>
           </div>
-          <div class="col-md-7">
-            <div class="card p-3">
-              <h6 class="fw-bold mb-3">月度趨勢</h6>
-              <div id="trendChart" style="height:280px"></div>
-            </div>
-          </div>
+          <div class="card-body p-2" id="reminderList" style="max-height:220px;overflow:auto"></div>
         </div>
+        <div class="row g-3">
+          <div class="col-md-5"><div class="card p-3"><h6 class="fw-bold mb-3">肌少症分期分布</h6><div id="pieChart" style="height:320px"></div></div></div>
+          <div class="col-md-7"><div class="card p-3"><h6 class="fw-bold mb-3">月度趨勢</h6><div id="trendChart" style="height:320px"></div></div></div>
+        </div>
+      </div>
+
+      <!-- Cases 個案總覽 -->
+      <div id="view-cases" style="display:none">
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <input type="text" id="caseQ" class="form-control form-control-sm" style="max-width:200px" placeholder="身分證 / 姓名" />
+          <select id="caseStage" class="form-select form-select-sm" style="max-width:140px">
+            <option value="">全部分期</option>
+            <option>正常</option><option>肌少症前期</option><option>肌少症</option><option>嚴重肌少症</option>
+          </select>
+          <div class="form-check form-check-inline align-self-center">
+            <input class="form-check-input" type="checkbox" id="caseNeedCare" />
+            <label class="form-check-label small" for="caseNeedCare">僅需關懷</label>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="loadCases()">查詢</button>
+        </div>
+        <div id="casesGrid" class="row g-3"></div>
+        <div class="mt-3 small text-muted" id="casesTotal"></div>
       </div>
 
       <!-- Records -->
       <div id="view-records" style="display:none">
         <div class="d-flex flex-wrap gap-2 mb-3">
-          <input type="text" id="searchQ" class="form-control form-control-sm" style="max-width:220px" placeholder="身分證 / 姓名 / 分期" />
-          <input type="date" id="recStart" class="form-control form-control-sm" style="max-width:150px" />
-          <input type="date" id="recEnd" class="form-control form-control-sm" style="max-width:150px" />
-          <button class="btn btn-primary btn-sm" onclick="loadRecords()">查詢</button>
-          <button class="btn btn-outline-success btn-sm" onclick="exportCSV()">
-            <i class="bi bi-download me-1"></i>匯出 CSV
-          </button>
-        </div>
-
-        <!-- Case detail panel -->
-        <div id="casePanel" class="card border-primary mb-3 p-3">
-          <div class="d-flex justify-content-between align-items-start mb-2">
-            <div>
-              <h5 class="mb-1" id="caseName">-</h5>
-              <div class="text-muted small" id="caseMeta">-</div>
-            </div>
-            <button class="btn btn-sm btn-outline-secondary" onclick="closeCase()">關閉</button>
+          <input type="text" id="searchQ" class="form-control form-control-sm" style="max-width:180px" placeholder="身分證 / 姓名" />
+          <input type="date" id="recStart" class="form-control form-control-sm" style="max-width:140px" />
+          <input type="date" id="recEnd" class="form-control form-control-sm" style="max-width:140px" />
+          <select id="recStage" class="form-select form-select-sm" style="max-width:130px">
+            <option value="">全部分期</option>
+            <option>正常</option><option>肌少症前期</option><option>肌少症</option><option>嚴重肌少症</option>
+          </select>
+          <select id="recGender" class="form-select form-select-sm" style="max-width:90px">
+            <option value="">性別</option><option value="M">男</option><option value="F">女</option>
+          </select>
+          <div class="form-check form-check-inline align-self-center">
+            <input class="form-check-input" type="checkbox" id="recAbnormalOnly" />
+            <label class="form-check-label small" for="recAbnormalOnly">僅異常</label>
           </div>
-          <div class="row g-2 mb-3" id="caseMetrics"></div>
-          <div id="caseTrendChart" style="height:220px"></div>
+          <button class="btn btn-primary btn-sm" onclick="currentPage=1;loadRecords()">查詢</button>
+          <button class="btn btn-outline-success btn-sm" onclick="exportCSV()"><i class="bi bi-download me-1"></i>匯出 CSV</button>
         </div>
-
+        <div id="casePanel" class="card mb-3 p-4" style="display:none">
+          <div class="d-flex justify-content-between align-items-start mb-3">
+            <div class="d-flex gap-3">
+              <div class="avatar-lg" id="caseAvatar">長</div>
+              <div>
+                <h5 class="mb-1" id="caseName">-</h5>
+                <div class="text-muted small" id="caseMeta">-</div>
+              </div>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <span class="badge rounded-pill text-bg-light border align-self-center" id="caseCountBadge">累計量測 0 次</span>
+              <button class="btn btn-sm btn-outline-primary" id="btnPrintReport" onclick="printCaseReport()">列印報告</button>
+              <button class="btn btn-sm btn-success" id="btnPdfReport" onclick="downloadCasePdf()"><i class="bi bi-file-earmark-pdf me-1"></i>下載 PDF</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="closeCase()">關閉</button>
+            </div>
+          </div>
+          <h6 class="fw-bold mb-3">個案各項健康與體適能生理指數（最新數據 vs 基準比較）</h6>
+          <div class="row g-2 mb-3" id="caseMetrics"></div>
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="fw-bold mb-0">個案歷月各項生理指數統計圖</h6>
+            <span class="badge text-bg-primary" id="caseChartTag"></span>
+          </div>
+          <div id="caseTrendChart" style="height:240px"></div>
+          <!-- 運動建議 -->
+          <div class="alert alert-warning small mt-3 mb-2" id="exerciseAdviceBox" style="display:none">
+            <div class="fw-bold mb-1" id="exerciseTitle"></div>
+            <div id="exerciseSummary" class="mb-1"></div>
+            <ul class="mb-1" id="exerciseItems"></ul>
+            <div>建議複檢日：<strong id="exerciseRetest"></strong>
+              <button class="btn btn-xs btn-outline-primary btn-sm ms-2" onclick="fillSuggestedRetest()">帶入關懷下次追蹤日</button>
+            </div>
+          </div>
+          <hr />
+          <h6 class="fw-bold">關懷追蹤紀錄</h6>
+          <div class="d-flex gap-2 mb-2">
+            <input type="text" id="careNoteInput" class="form-control form-control-sm" placeholder="輸入關懷內容（電話關心、轉介、複測日…）" />
+            <input type="date" id="careNextDate" class="form-control form-control-sm" style="max-width:150px" title="下次追蹤日" />
+            <button class="btn btn-sm btn-primary" onclick="addCareNote()">新增</button>
+          </div>
+          <div id="careNotesList" class="small"></div>
+        </div>
         <div class="card">
           <div class="table-responsive">
             <table class="table table-hover table-sm mb-0">
@@ -194,49 +278,66 @@
           <div class="p-2 d-flex justify-content-between align-items-center small text-muted">
             <span id="recTotal">共 0 筆</span>
             <div>
-              <button class="btn btn-sm btn-outline-secondary" id="prevPage" onclick="changePage(-1)">上一頁</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changePage(-1)">上一頁</button>
               <span class="mx-2" id="pageInfo">1</span>
-              <button class="btn btn-sm btn-outline-secondary" id="nextPage" onclick="changePage(1)">下一頁</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changePage(1)">下一頁</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Duplicates -->
+      <div id="view-duplicates" style="display:none">
+        <div class="alert alert-info small">同一人身分證、同一天若有多筆，檢測紀錄只顯示時間最新的一筆。較舊的資料不會刪除，可在此查詢。</div>
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <input type="text" id="dupQ" class="form-control form-control-sm" style="max-width:200px" placeholder="身分證 / 姓名" />
+          <button class="btn btn-primary btn-sm" onclick="dupPage=1;loadDuplicates()">查詢</button>
+        </div>
+        <div class="card">
+          <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>身分證</th><th>姓名</th><th>性別/年齡</th><th>檢測時間</th>
+                  <th>握力</th><th>坐站</th><th>走路</th><th>SMI</th>
+                  <th>分期</th>
+                </tr>
+              </thead>
+              <tbody id="dupBody"></tbody>
+            </table>
+          </div>
+          <div class="p-2 d-flex justify-content-between small text-muted">
+            <span id="dupTotal">共 0 筆</span>
+            <div>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changeDupPage(-1)">上一頁</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="changeDupPage(1)">下一頁</button>
             </div>
           </div>
         </div>
       </div>
 
       <!-- Alerts -->
-      
-      <div id="view-duplicates" style="display:none">
-        <div class="alert alert-info small">同一身分證同一天只在檢測紀錄顯示最新一筆。較舊資料可在此查詢，不會刪除。</div>
-        <div class="d-flex gap-2 mb-3">
-          <input type="text" id="dupQ" class="form-control form-control-sm" style="max-width:220px" placeholder="身分證 / 姓名" />
-          <button class="btn btn-primary btn-sm" onclick="dupPage=1;loadDuplicates()">查詢</button>
-        </div>
-        <div class="card">
-          <div class="table-responsive">
-            <table class="table table-sm table-hover mb-0">
-              <thead class="table-light"><tr>
-                <th>身分證</th><th>姓名</th><th>性別/年齡</th><th>檢測時間</th>
-                <th>握力</th><th>坐站</th><th>走路</th><th>SMI</th><th>分期</th>
-              </tr></thead>
-              <tbody id="dupBody"></tbody>
-            </table>
-          </div>
-          <div class="p-2 small text-muted" id="dupTotal">共 0 筆</div>
-        </div>
-      </div>
-<div id="view-alerts" style="display:none">
-        <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+      <div id="view-alerts" style="display:none">
+        <div class="d-flex flex-wrap gap-2 mb-2 align-items-center">
           <h5 class="mb-0 fw-bold me-2"><i class="bi bi-bell me-1"></i>異常通報中心</h5>
           <button class="btn btn-sm btn-outline-primary" onclick="loadAlerts()">重新整理</button>
-          <button class="btn btn-sm btn-outline-success" onclick="sendLineTest()">
-            <i class="bi bi-line me-1"></i>傳送模擬資料到 LINE
-          </button>
-          <div class="form-check form-check-inline ms-2">
-            <input class="form-check-input" type="checkbox" id="alertOnlyUnhandled" checked onchange="loadAlerts()">
+          <button class="btn btn-sm btn-outline-success" onclick="sendLineTest()"><i class="bi bi-line me-1"></i>模擬 LINE</button>
+          <button class="btn btn-sm btn-outline-warning admin-only" onclick="sendDailySummary()">每日摘要到 LINE</button>
+          <button class="btn btn-sm btn-primary" onclick="batchHandleSelected()">批次標記已關懷</button>
+        </div>
+        <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+          <input type="text" id="alertQ" class="form-control form-control-sm" style="max-width:180px" placeholder="身分證 / 姓名" />
+          <input type="date" id="alertStart" class="form-control form-control-sm" style="max-width:140px" />
+          <input type="date" id="alertEnd" class="form-control form-control-sm" style="max-width:140px" />
+          <select id="alertStage" class="form-select form-select-sm" style="max-width:140px">
+            <option value="">全部分期</option>
+            <option>正常</option><option>肌少症前期</option><option>肌少症</option><option>嚴重肌少症</option>
+          </select>
+          <div class="form-check form-check-inline align-self-center">
+            <input class="form-check-input" type="checkbox" id="alertOnlyUnhandled" checked />
             <label class="form-check-label small" for="alertOnlyUnhandled">只看未處理</label>
           </div>
-        </div>
-        <div class="alert alert-light border small mb-3">
-          當個案出現握力不足、坐站偏慢、步速偏慢、SMI 偏低或血壓異常時，會自動出現在這裡，並列出該次完整身體數據。
+          <button class="btn btn-primary btn-sm" onclick="loadAlerts()">查詢</button>
         </div>
         <div id="lineTestResult" class="mb-3"></div>
         <div id="alertsList"></div>
@@ -246,62 +347,151 @@
       <div id="view-import" style="display:none">
         <div class="card p-4" style="max-width:640px">
           <h5 class="fw-bold mb-3"><i class="bi bi-cloud-upload me-2"></i>匯入真實檢測資料</h5>
-          <p class="text-muted small">支援 <strong>CSV</strong> 與 <strong>Excel (.xlsx)</strong>。系統會自動對應中英文欄位、計算 BMI、判斷肌少症分期，並去重。</p>
-          <div class="alert alert-light border small">
-            <strong>建議欄位：</strong>身分證、姓名、性別、年齡、身高、體重、體脂率、SMI、收縮壓、舒張壓、脈搏、握力、五次坐站、走路時間、檢測時間
-          </div>
+          <p class="text-muted small">支援 CSV 與 Excel。自動對應欄位、計算 BMI、判斷分期，並自動去重。</p>
           <input type="file" id="importFile" class="form-control mb-3" accept=".csv,.xlsx,.xls" />
-          <button class="btn btn-primary" onclick="doImport()">
-            <i class="bi bi-check2-circle me-1"></i>開始匯入
-          </button>
+          <div class="d-flex flex-wrap gap-2">
+            <button class="btn btn-primary" onclick="doImport()">開始匯入（含自動去重）</button>
+            <button class="btn btn-outline-danger" onclick="doDedupe()">掃描並刪除資料庫重複</button>
+          </div>
           <div id="importResult" class="mt-3"></div>
-          <hr />
-          <p class="small text-muted mb-1">也可直接呼叫 API：</p>
-          <code class="small">POST /api/import  (multipart/form-data, field: file)</code>
         </div>
+      </div>
+
+      <!-- Period report -->
+      <div id="view-report" style="display:none">
+        <div class="card p-4" style="max-width:720px">
+          <h5 class="fw-bold mb-3">期間報表</h5>
+          <div class="d-flex flex-wrap gap-2 mb-3">
+            <input type="date" id="repStart" class="form-control form-control-sm" style="max-width:160px" />
+            <input type="date" id="repEnd" class="form-control form-control-sm" style="max-width:160px" />
+            <button class="btn btn-primary btn-sm" onclick="loadPeriodReport()">產生報表</button>
+          </div>
+          <div id="periodReportBox" class="alert alert-light border">請選擇日期後產生報表</div>
+        </div>
+      </div>
+
+      <!-- Users -->
+      <div id="view-users" style="display:none">
+        <div class="d-flex justify-content-between mb-3">
+          <h5 class="fw-bold mb-0">帳號管理</h5>
+          <button class="btn btn-sm btn-primary" onclick="showCreateUser()">新增帳號</button>
+        </div>
+        <div id="createUserBox" class="card p-3 mb-3" style="display:none">
+          <div class="row g-2">
+            <div class="col-md-3"><input id="nuUser" class="form-control form-control-sm" placeholder="帳號" /></div>
+            <div class="col-md-3"><input id="nuPass" class="form-control form-control-sm" type="password" placeholder="密碼" /></div>
+            <div class="col-md-3"><input id="nuName" class="form-control form-control-sm" placeholder="顯示名稱" /></div>
+            <div class="col-md-2">
+              <select id="nuRole" class="form-select form-select-sm">
+                <option value="admin">館管理員</option>
+                <option value="nurse">護理師</option>
+                <option value="caregiver">照顧服務員</option>
+                <option value="staff">一般人員</option>
+                <option value="superadmin">超級管理員</option>
+              </select>
+            </div>
+            <div class="col-md-1"><button class="btn btn-sm btn-success w-100" onclick="createUser()">建立</button></div>
+          </div>
+        </div>
+        <div class="card"><div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead class="table-light"><tr><th>帳號</th><th>名稱</th><th>角色</th><th>狀態</th><th>操作</th></tr></thead>
+            <tbody id="usersBody"></tbody>
+          </table>
+        </div></div>
+      </div>
+
+      <!-- Settings thresholds -->
+      <div id="view-settings" style="display:none">
+        <div class="card p-4" style="max-width:640px">
+          <h5 class="fw-bold mb-3">異常門檻設定</h5>
+          <p class="small text-muted">修改後會影響新匯入／新增資料的判定參考（顯示用）。現有紀錄不會自動重算。</p>
+          <div class="row g-2" id="thresholdForm"></div>
+          <button class="btn btn-primary mt-3" onclick="saveThresholds()">儲存門檻</button>
+          <div id="thresholdMsg" class="mt-2"></div>
+        </div>
+
+        <div class="card p-4 mt-3" style="max-width:900px">
+          <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+            <div>
+              <h5 class="fw-bold mb-1"><i class="bi bi-bicycle me-2"></i>真茂科技運動輔具建議（可編輯）</h5>
+              <p class="small text-muted mb-0">管理員可修改名稱、為什麼、怎麼用、注意事項。儲存後異常通報卡片會立即套用。</p>
+            </div>
+            <div class="d-flex gap-2">
+              <button class="btn btn-sm btn-outline-secondary" onclick="addEquipmentRow()">＋ 新增一筆</button>
+              <button class="btn btn-sm btn-outline-warning" onclick="resetEquipment()">還原預設</button>
+              <button class="btn btn-sm btn-primary" onclick="saveEquipment()">儲存輔具建議</button>
+            </div>
+          </div>
+          <div id="equipmentEditor" class="vstack gap-3"></div>
+          <div id="equipmentMsg" class="mt-2 small"></div>
+          <p class="small text-muted mt-2 mb-0">觸發條件說明：grip 握力不足、chair 坐站偏慢、walk 走路偏慢、smi 肌肉量低、stage 肌少分期、always_abnormal 有任何異常、always 一律顯示</p>
+        </div>
+
+        <div class="card p-4 mt-3" style="max-width:640px">
+          <h5 class="fw-bold mb-2"><i class="bi bi-database-down me-2"></i>資料庫備份</h5>
+          <p class="small text-muted">一鍵下載目前 SQLite 資料庫檔案，建議定期備份。僅管理員可用。</p>
+          <button class="btn btn-outline-success" onclick="downloadBackup()"><i class="bi bi-download me-1"></i>下載備份檔</button>
+          <div id="backupMsg" class="mt-2 small"></div>
+        </div>
+      </div>
+
+      <!-- Audit -->
+      <div id="view-audit" style="display:none">
+        <div class="d-flex gap-2 mb-3">
+          <input type="text" id="auditQ" class="form-control form-control-sm" style="max-width:220px" placeholder="搜尋操作者 / 動作" />
+          <button class="btn btn-sm btn-primary" onclick="loadAudit()">查詢</button>
+        </div>
+        <div class="card"><div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead class="table-light"><tr><th>時間</th><th>操作者</th><th>動作</th><th>詳情</th></tr></thead>
+            <tbody id="auditBody"></tbody>
+          </table>
+        </div></div>
       </div>
 
       <!-- API -->
       <div id="view-api" style="display:none">
         <div class="card p-4">
           <h5 class="fw-bold mb-3">RESTful API 說明</h5>
-          <p>本系統提供真實可用的後端 API，可讓醫療 HIS、長照平台、物聯網檢測設備串接。</p>
-          <table class="table table-sm table-bordered">
-            <thead class="table-light"><tr><th>方法</th><th>路徑</th><th>說明</th></tr></thead>
-            <tbody>
-              <tr><td>POST</td><td><code>/api/auth/login</code></td><td>登入取得 JWT</td></tr>
-              <tr><td>POST</td><td><code>/api/measurements</code></td><td>新增單筆檢測（JSON）</td></tr>
-              <tr><td>GET</td><td><code>/api/measurements</code></td><td>查詢列表（支援篩選分頁）</td></tr>
-              <tr><td>GET</td><td><code>/api/cases/{id_card}</code></td><td>個案完整歷史與最新數據</td></tr>
-              <tr><td>POST</td><td><code>/api/import</code></td><td>批次匯入 CSV/Excel</td></tr>
-              <tr><td>GET</td><td><code>/api/stats</code></td><td>統計與趨勢</td></tr>
-              <tr><td>GET</td><td><code>/api/export/csv</code></td><td>匯出 CSV</td></tr>
-            </tbody>
-          </table>
-          <p class="mb-1">完整互動文件：</p>
+          <p>完整互動文件：</p>
           <a href="/api/docs" target="_blank" class="btn btn-outline-primary btn-sm">開啟 Swagger UI</a>
           <hr />
-          <h6>認證方式</h6>
           <pre class="bg-dark text-light p-3 rounded small"><code>Authorization: Bearer &lt;access_token&gt;</code></pre>
-          <h6>新增檢測範例 (curl)</h6>
-          <pre class="bg-dark text-light p-3 rounded small"><code>curl -X POST http://localhost:8000/api/measurements \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id_card": "A123456789",
-    "user_name": "王小明",
-    "gender": "M",
-    "age": 72,
-    "height": 168,
-    "weight": 65,
-    "grip_strength": 26.5,
-    "chair_stand_time": 11.2,
-    "walking_time": 18.5,
-    "smi": 7.1,
-    "systolic": 128,
-    "diastolic": 78,
-    "measure_time": "2026-09-09 10:00:00"
-  }'</code></pre>
+        </div>
+      </div>
+
+      <!-- Feedback -->
+      <div id="view-feedback" style="display:none">
+        <div class="card p-4" style="max-width:720px">
+          <h5 class="fw-bold mb-1"><i class="bi bi-chat-heart me-2 text-danger"></i>意見／錯誤回饋</h5>
+          <p class="text-muted small mb-3">填寫後會存檔，並推播到已設定的官方 LINE 帳號。</p>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">類型</label>
+            <div class="d-flex gap-3 flex-wrap">
+              <label class="form-check-label"><input type="radio" class="form-check-input me-1" name="fbCat" value="suggestion" checked> 意見建議</label>
+              <label class="form-check-label"><input type="radio" class="form-check-input me-1" name="fbCat" value="bug"> 錯誤回報</label>
+              <label class="form-check-label"><input type="radio" class="form-check-input me-1" name="fbCat" value="other"> 其他</label>
+            </div>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">標題（選填）</label>
+            <input type="text" id="fbTitle" class="form-control" maxlength="200" placeholder="例如：匯入畫面按鈕無反應" />
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">內容 <span class="text-danger">*</span></label>
+            <textarea id="fbContent" class="form-control" rows="5" maxlength="3000" placeholder="請描述你的意見或發生的錯誤（步驟、畫面、時間等）"></textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small fw-semibold">聯絡方式（選填）</label>
+            <input type="text" id="fbContact" class="form-control" maxlength="120" placeholder="電話或 LINE ID，方便後續聯繫" />
+          </div>
+          <div class="d-flex gap-2 align-items-center">
+            <button class="btn btn-primary" id="fbSubmitBtn" onclick="submitFeedback()">
+              <i class="bi bi-send me-1"></i>送出並通知 LINE
+            </button>
+            <span id="fbStatus" class="small text-muted"></span>
+          </div>
         </div>
       </div>
     </main>
