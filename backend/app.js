@@ -203,110 +203,80 @@ async function loadStats() {
     document.getElementById("sMulti").textContent = s.multi_abnormal_rate + "%";
     document.getElementById("summaryText").textContent = s.summary_text;
 
-    // --- 肌少症分期圓環圖 ---
+    // --- 肌少症分期：橫向長條圖 ---
     const pieEl = document.getElementById("pieChart");
     const pie = echarts.getInstanceByDom(pieEl) || echarts.init(pieEl);
-    const pieData = (s.sarcopenia_pie || []).map((d) => ({
-      name: d.name,
-      value: d.value,
-      itemStyle: { color: d.color, borderRadius: 6, borderColor: "#fff", borderWidth: 2 },
-    }));
-    const pieTotal = pieData.reduce((a, b) => a + (b.value || 0), 0);
+    const order = ["嚴重肌少症", "肌少症", "肌少症前期", "正常"];
+    const colorMap = {
+      "正常": "#cbd5e1",
+      "肌少症前期": "#f5c542",
+      "肌少症": "#f08a4b",
+      "嚴重肌少症": "#e06b8a",
+    };
+    const rawPie = s.sarcopenia_pie || [];
+    const cats = order.filter((n) => rawPie.some((d) => d.name === n) || true);
+    const values = cats.map((n) => {
+      const hit = rawPie.find((d) => d.name === n);
+      return hit ? hit.value : 0;
+    });
+    const colors = cats.map((n) => colorMap[n] || "#94a3b8");
     pie.setOption({
-      color: ["#10b981", "#f59e0b", "#f97316", "#ef4444"],
       tooltip: {
-        trigger: "item",
-        backgroundColor: "rgba(15,23,42,.92)",
-        borderWidth: 0,
-        textStyle: { color: "#fff", fontSize: 13 },
-        formatter: (p) => `${p.marker}${p.name}<br/>人數：<b>${p.value}</b><br/>占比：<b>${p.percent}%</b>`,
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p) => `${p[0].name}：${p[0].value} 人`,
       },
-      legend: {
-        orient: "horizontal",
-        bottom: 0,
-        left: "center",
-        itemWidth: 12,
-        itemHeight: 12,
-        textStyle: { color: "#475569", fontSize: 12 },
+      grid: { left: 88, right: 48, top: 16, bottom: 24 },
+      xAxis: {
+        type: "value",
+        minInterval: 1,
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+        axisLabel: { color: "#94a3b8" },
+      },
+      yAxis: {
+        type: "category",
+        data: cats,
+        inverse: false,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: "#64748b", fontSize: 12 },
       },
       series: [{
-        type: "pie",
-        radius: ["48%", "72%"],
-        center: ["50%", "46%"],
-        avoidLabelOverlap: true,
-        data: pieData,
+        type: "bar",
+        data: values.map((v, i) => ({
+          value: v,
+          itemStyle: { color: colors[i], borderRadius: [0, 8, 8, 0] },
+        })),
+        barWidth: 18,
         label: {
-          formatter: "{b}\n{c}人",
-          fontSize: 11,
-          color: "#334155",
-          lineHeight: 16,
+          show: true,
+          position: "right",
+          formatter: "{c} 人",
+          color: "#64748b",
+          fontSize: 12,
         },
-        labelLine: { length: 12, length2: 8, smooth: true },
-        emphasis: {
-          scale: true,
-          scaleSize: 8,
-          itemStyle: { shadowBlur: 16, shadowColor: "rgba(0,0,0,.18)" },
-          label: { fontWeight: "bold", fontSize: 13 },
-        },
-      }],
-      graphic: [{
-        type: "group",
-        left: "center",
-        top: "38%",
-        children: [
-          {
-            type: "text",
-            style: {
-              text: String(pieTotal),
-              fontSize: 26,
-              fontWeight: 700,
-              fill: "#0f172a",
-              textAlign: "center",
-              textVerticalAlign: "middle",
-            },
-            left: "center",
-          },
-          {
-            type: "text",
-            top: 22,
-            style: {
-              text: "總檢測",
-              fontSize: 12,
-              fill: "#94a3b8",
-              textAlign: "center",
-              textVerticalAlign: "middle",
-            },
-            left: "center",
-          },
-        ],
       }],
     }, true);
 
-    // --- 月度趨勢：長條 + 折線 ---
+    // --- 月度趨勢：檢測次數 + 平均握力雙長條 ---
     const trendEl = document.getElementById("trendChart");
     const trend = echarts.getInstanceByDom(trendEl) || echarts.init(trendEl);
     const m = s.monthly_trends || { months: [], counts: [], avg_grip: [], avg_chair: [], avg_walk: [] };
     const months = m.months || [];
     trend.setOption({
-      color: ["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6"],
-      tooltip: {
-        trigger: "axis",
-        backgroundColor: "rgba(15,23,42,.92)",
-        borderWidth: 0,
-        textStyle: { color: "#fff", fontSize: 12 },
-        axisPointer: { type: "cross", crossStyle: { color: "#94a3b8" } },
-      },
+      color: ["#2bb8a8", "#8ea4f5"],
+      tooltip: { trigger: "axis" },
       legend: {
-        data: ["檢測次數", "平均握力", "平均坐站", "平均走路"],
+        data: ["檢測次數", "平均握力"],
         top: 0,
-        textStyle: { color: "#475569", fontSize: 12 },
+        textStyle: { color: "#64748b", fontSize: 12 },
       },
-      grid: { left: 48, right: 52, top: 40, bottom: 36 },
+      grid: { left: 44, right: 44, top: 40, bottom: 36 },
       xAxis: {
         type: "category",
         data: months,
         axisLine: { lineStyle: { color: "#e2e8f0" } },
-        axisLabel: { color: "#64748b", fontSize: 11, rotate: months.length > 8 ? 30 : 0 },
+        axisLabel: { color: "#94a3b8", fontSize: 11 },
         axisTick: { show: false },
       },
       yAxis: [
@@ -314,75 +284,32 @@ async function loadStats() {
           type: "value",
           name: "次數",
           nameTextStyle: { color: "#94a3b8", fontSize: 11 },
-          splitLine: { lineStyle: { color: "#f1f5f9", type: "dashed" } },
-          axisLabel: { color: "#64748b" },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8" },
         },
         {
           type: "value",
-          name: "秒 / kg",
+          name: "kg",
           nameTextStyle: { color: "#94a3b8", fontSize: 11 },
           splitLine: { show: false },
-          axisLabel: { color: "#64748b" },
+          axisLabel: { color: "#94a3b8" },
         },
       ],
       series: [
         {
           name: "檢測次數",
           type: "bar",
-          barMaxWidth: 28,
+          barMaxWidth: 26,
           data: m.counts || [],
-          itemStyle: {
-            color: {
-              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: "#60a5fa" },
-                { offset: 1, color: "#2563eb" },
-              ],
-            },
-            borderRadius: [6, 6, 0, 0],
-          },
+          itemStyle: { color: "#2bb8a8", borderRadius: [4, 4, 0, 0] },
         },
         {
           name: "平均握力",
-          type: "line",
+          type: "bar",
           yAxisIndex: 1,
-          smooth: true,
-          symbol: "circle",
-          symbolSize: 7,
+          barMaxWidth: 26,
           data: m.avg_grip || [],
-          lineStyle: { width: 3, color: "#10b981" },
-          itemStyle: { color: "#10b981" },
-          areaStyle: {
-            color: {
-              type: "linear", x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: "rgba(16,185,129,.25)" },
-                { offset: 1, color: "rgba(16,185,129,0)" },
-              ],
-            },
-          },
-        },
-        {
-          name: "平均坐站",
-          type: "line",
-          yAxisIndex: 1,
-          smooth: true,
-          symbol: "circle",
-          symbolSize: 6,
-          data: m.avg_chair || [],
-          lineStyle: { width: 2, color: "#f59e0b" },
-          itemStyle: { color: "#f59e0b" },
-        },
-        {
-          name: "平均走路",
-          type: "line",
-          yAxisIndex: 1,
-          smooth: true,
-          symbol: "circle",
-          symbolSize: 6,
-          data: m.avg_walk || [],
-          lineStyle: { width: 2, color: "#8b5cf6" },
-          itemStyle: { color: "#8b5cf6" },
+          itemStyle: { color: "#8ea4f5", borderRadius: [4, 4, 0, 0] },
         },
       ],
     }, true);

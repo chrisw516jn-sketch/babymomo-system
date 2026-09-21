@@ -9,18 +9,21 @@
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
   <style>
     :root {
-      --primary: #1e3a8a;
-      --primary-grad: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+      --primary: #2bb8a8;
+      --primary-dark: #1f9a8c;
+      --primary-grad: linear-gradient(135deg, #2bb8a8 0%, #4fd1c5 100%);
     }
-    body { background: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; }
+    body { background: #eef8f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; }
     #authOverlay {
       position: fixed; inset: 0; z-index: 9999;
-      background: var(--primary-grad);
+      background: linear-gradient(160deg, #d8f3ee 0%, #2bb8a8 45%, #1f9a8c 100%);
       display: flex; align-items: center; justify-content: center;
     }
-    .auth-card { width: 100%; max-width: 420px; border-radius: 16px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,.4); }
+    .auth-card { width: 100%; max-width: 420px; border-radius: 16px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(31,154,140,.35); }
     .auth-header { background: var(--primary-grad); color: #fff; padding: 2rem 1.5rem 1.5rem; text-align: center; }
-    .navbar-custom { background: var(--primary-grad); }
+    .navbar-custom { background: #2bb8a8 !important; }
+    .btn-primary { background: #2bb8a8; border-color: #2bb8a8; }
+    .btn-primary:hover { background: #1f9a8c; border-color: #1f9a8c; }
     .stat-card { border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); transition: .2s; }
     .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,.1); }
     .badge-normal { background: #d1fae5; color: #065f46; }
@@ -32,14 +35,14 @@
     .metric-card.fail { border-left: 4px solid #ef4444; }
     .sidebar { width: 240px; min-height: calc(100vh - 56px); background: #fff; border-right: 1px solid #e2e8f0; }
     .sidebar .nav-link { color: #475569; border-radius: 8px; margin: 2px 8px; }
-    .sidebar .nav-link.active, .sidebar .nav-link:hover { background: #eff6ff; color: #1e40af; }
+    .sidebar .nav-link.active, .sidebar .nav-link:hover { background: #e6f7f4; color: #1f9a8c; }
     .main-content { flex: 1; padding: 1.5rem; }
     .table th { font-size: .8rem; white-space: nowrap; }
     #casePanel { display: none; border-radius: 16px; }
     .quick-bar { background:#fff; border:1px solid #e2e8f0; border-radius:14px; padding:12px 16px; }
-    .chip-btn { border:1px solid #93c5fd; color:#1d4ed8; background:#eff6ff; border-radius:999px; padding:4px 12px; font-size:13px; }
-    .chip-btn:hover { background:#dbeafe; }
-    .avatar-lg { width:56px; height:56px; border-radius:50%; background:#1e3a8a; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; }
+    .chip-btn { border:1px solid #99ddd4; color:#1f9a8c; background:#e6f7f4; border-radius:999px; padding:4px 12px; font-size:13px; }
+    .chip-btn:hover { background:#d4f1ec; }
+    .avatar-lg { width:56px; height:56px; border-radius:50%; background:#2bb8a8; color:#fff; display:flex; align-items:center; justify-content:center; font-size:22px; }
     .photo-metric { background:#fafafa; border:1px solid #e5e7eb; border-radius:12px; padding:14px 16px; min-height:110px; }
     .photo-metric .val { font-size:1.65rem; font-weight:800; letter-spacing:-.02em; }
     .case-card { border-radius: 12px; border: 1px solid #e2e8f0; background: #fff; transition: .15s; cursor: pointer; }
