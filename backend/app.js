@@ -619,37 +619,73 @@ async function openCase(idCard) {
 
     const caseEl = document.getElementById("caseTrendChart");
     const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
-    const g = latest.grip_strength != null ? Number(latest.grip_strength) : 0;
-    const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : 0;
-    const w = latest.walking_time != null ? Number(latest.walking_time) : 0;
-    const sm = latest.smi != null ? Number(latest.smi) : 0;
-    const gripPct = Math.max(0, Math.min(100, gripStd ? (g / gripStd) * 100 : 0));
-    const chairPct = c ? Math.max(0, Math.min(100, (12 / Math.max(c, 0.1)) * 100)) : 0;
-    const walkPct = w ? Math.max(0, Math.min(100, (20 / Math.max(w, 0.1)) * 100)) : 0;
-    const smiPct = Math.max(0, Math.min(100, smiStd ? (sm / smiStd) * 100 : 0));
+    const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
+    const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
+    const w = latest.walking_time != null ? Number(latest.walking_time) : null;
+    const sm = latest.smi != null ? Number(latest.smi) : null;
+    function pctHigher(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (val / std) * 100)));
+    }
+    function pctLower(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (std / Math.max(val, 0.01)) * 100)));
+    }
+    const items = [
+      { name: "握力", pct: pctHigher(g, gripStd), raw: g == null ? "-" : g + " kg", ok: g != null && g >= gripStd },
+      { name: "五次坐站", pct: pctLower(c, 12), raw: c == null ? "-" : c + " 秒", ok: c != null && c < 12 },
+      { name: "走路時間", pct: pctLower(w, 20), raw: w == null ? "-" : w + " 秒", ok: w != null && w < 20 },
+      { name: "SMI", pct: pctHigher(sm, smiStd), raw: sm == null ? "-" : sm + " kg/m²", ok: sm != null && sm >= smiStd },
+    ];
     chart.setOption({
-      title: { text: "最新檢測達標程度（相對標準）", left: 8, top: 4, textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 } },
-      radar: {
-        indicator: [
-          { name: "握力", max: 120 },
-          { name: "坐站", max: 120 },
-          { name: "走路", max: 120 },
-          { name: "SMI", max: 120 },
-        ],
-        center: ["50%", "56%"],
-        radius: "58%",
-        splitNumber: 4,
-        axisName: { color: "#64748b", fontSize: 12 },
-        splitLine: { lineStyle: { color: "#e2e8f0" } },
-        splitArea: { areaStyle: { color: ["#f8fffd", "#ffffff"] } },
+      title: {
+        text: "最新檢測達標率（100% = 剛好達到標準）",
+        left: 8,
+        top: 4,
+        textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
       },
-      tooltip: { formatter: () => `握力 ${g} kg<br/>坐站 ${c} 秒<br/>走路 ${w} 秒<br/>SMI ${sm}` },
+      tooltip: {
+        trigger: "axis",
+        formatter: (p) => {
+          const i = items[p[0].dataIndex];
+          return `${i.name}<br/>實測：${i.raw}<br/>達標率：${i.pct}%`;
+        },
+      },
+      grid: { left: 80, right: 56, top: 40, bottom: 24 },
+      xAxis: {
+        type: "value",
+        max: 150,
+        axisLabel: { formatter: "{value}%" },
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+      },
+      yAxis: {
+        type: "category",
+        data: items.map((i) => i.name),
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: "#475569" },
+      },
       series: [{
-        type: "radar",
-        data: [
-          { value: [100, 100, 100, 100], name: "標準", lineStyle: { type: "dashed", color: "#94a3b8" }, itemStyle: { color: "#94a3b8" }, areaStyle: { color: "rgba(148,163,184,.08)" } },
-          { value: [gripPct, chairPct, walkPct, smiPct], name: "本案", lineStyle: { color: "#2bb8a8", width: 2 }, itemStyle: { color: "#2bb8a8" }, areaStyle: { color: "rgba(43,184,168,.25)" } },
-        ],
+        type: "bar",
+        data: items.map((i) => ({
+          value: i.pct,
+          itemStyle: { color: i.ok ? "#2bb8a8" : "#f08a4b", borderRadius: [0, 8, 8, 0] },
+        })),
+        barWidth: 16,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { type: "dashed", color: "#94a3b8" },
+          label: { formatter: "標準 100%", fontSize: 10 },
+          data: [{ xAxis: 100 }],
+        },
+        label: {
+          show: true,
+          position: "right",
+          formatter: (p) => items[p.dataIndex].raw,
+          color: "#64748b",
+          fontSize: 11,
+        },
       }],
     }, true);
     window.addEventListener("resize", () => chart.resize());
