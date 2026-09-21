@@ -42,25 +42,27 @@ app.add_middleware(
 )
 
 # ---------- Startup ----------
+# ---------- Startup ----------
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
     db = next(get_db())
     try:
-        # 僅保留兩個指定管理員；移除舊的預設帳號
         for old in db.query(User).all():
-                                   if old.username not in {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}:
+            if old.username not in {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}:
                 db.delete(old)
         db.commit()
 
         defaults = [
-                    ("littlethanks", "Aa0610", "館管理員", "admin", None),
-            ("Netown", "Aa0225991228", "Netown (管理員)", "admin", None),
-              allowed = {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}
-                                                   ("littlethanks", "Aa0610", "館管理員", "admin", None),
+            ("bonnie", "Aa960723", "Bonnie (系統管理員)", "superadmin", "Bonnie960723@gmail.com"),
+            ("chrisavicii", "Aa0965652118", "Chris (超級管理員)", "superadmin", "chrisw516jn@gmail.com"),
+            ("littlethanks", "Aa0610", "館管理員", "admin", None),
             ("Netown", "Aa0225991228", "Netown (管理員)", "admin", None),
             ("nurse1", "Nurse1234", "護理師小美", "nurse", None),
-                allowed = {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}
+            ("care1", "Care1234", "照顧服務員小華", "caregiver", None),
+        ]
+        allowed = {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}
+        for username, pwd, display, role, email in defaults:
             existing = get_user_by_username(db, username)
             if existing:
                 existing.hashed_password = get_password_hash(pwd)
@@ -80,6 +82,8 @@ def on_startup():
         db.commit()
     finally:
         db.close()
+
+
 
 
 def add_audit(db: Session, operator: str, action: str, details: str = ""):
