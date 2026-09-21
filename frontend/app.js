@@ -1,15 +1,17 @@
 function ensureCuteTheme() {
-  if (document.getElementById("cute-theme")) return;
+  const old = document.getElementById("cute-theme");
+  if (old) old.remove();
+  if (document.getElementById("cute-theme-v2")) return;
   const s = document.createElement("style");
-  s.id = "cute-theme";
+  s.id = "cute-theme-v2";
   s.textContent = `
-    body { background: #fff6f8 !important; }
-    .navbar, nav.navbar, .navbar-dark { background: linear-gradient(90deg,#ff8fab,#ffc2d1) !important; }
-    .card { border-radius: 18px !important; border: none !important; box-shadow: 0 8px 20px rgba(255,143,171,.12) !important; }
+    body { background: #f3fbf7 !important; }
+    .navbar, nav.navbar, .navbar-dark { background: linear-gradient(90deg,#3db8a0,#7fd3c3) !important; }
+    .card { border-radius: 18px !important; border: none !important; box-shadow: 0 8px 20px rgba(61,184,160,.12) !important; }
     .metric-card { border-radius: 16px !important; background: #fff !important; }
-    #summaryText { background: #fff0f5 !important; border-color: #ffd0e0 !important; color: #5a4a4a !important; }
-    .btn-primary { background: #ff8fab !important; border-color: #ff8fab !important; border-radius: 999px !important; }
-    .btn-outline-primary { color: #e85a8a !important; border-color: #ffc2d1 !important; border-radius: 999px !important; }
+    #summaryText { background: #e8f8f3 !important; border-color: #b7eadc !important; color: #35514a !important; }
+    .btn-primary { background: #3db8a0 !important; border-color: #3db8a0 !important; border-radius: 999px !important; }
+    .btn-outline-primary { color: #2a8f7c !important; border-color: #7fd3c3 !important; border-radius: 999px !important; }
   `;
   document.head.appendChild(s);
 }
@@ -261,10 +263,10 @@ async function loadStats() {
 
     ensureCuteTheme();
     const pieColors = {
-      "正常": "#8ee0b0",
-      "肌少症前期": "#ffe08a",
-      "肌少症": "#ffb4a2",
-      "嚴重肌少症": "#f7a1c4",
+      "正常": "#3db8a0",
+      "肌少症前期": "#f4c95d",
+      "肌少症": "#f08a5d",
+      "嚴重肌少症": "#d65a7a",
     };
     const pie = echarts.init(document.getElementById("pieChart"));
     const pieRows = (s.sarcopenia_pie || []).slice().reverse();
@@ -299,26 +301,18 @@ async function loadStats() {
       series: [
         {
           name: "檢測次數",
-          type: "line",
-          smooth: true,
-          symbol: "circle",
-          symbolSize: 11,
+          type: "bar",
           data: m.counts,
-          lineStyle: { width: 3, color: "#8ec5ff" },
-          itemStyle: { color: "#8ec5ff" },
-          areaStyle: { color: "rgba(142,197,255,0.28)" },
+          barWidth: 22,
+          itemStyle: { color: "#3db8a0", borderRadius: [10, 10, 4, 4] },
         },
         {
           name: "平均握力",
-          type: "line",
+          type: "bar",
           yAxisIndex: 1,
           data: m.avg_grip,
-          smooth: true,
-          symbol: "circle",
-          symbolSize: 10,
-          lineStyle: { width: 3, color: "#ff8fab" },
-          itemStyle: { color: "#ff8fab" },
-          areaStyle: { color: "rgba(255,143,171,0.18)" },
+          barWidth: 22,
+          itemStyle: { color: "#7b9cff", borderRadius: [10, 10, 4, 4] },
         },
       ],
     });
@@ -406,20 +400,24 @@ async function openCase(idCard) {
       </div></div>`;
     }).join("");
 
-    // history trend
     const hist = [...data.history].reverse();
+    const latestH = hist[hist.length - 1] || {};
     const chart = echarts.init(document.getElementById("caseTrendChart"));
     chart.setOption({
-      color: ["#8ee0b0", "#ffc978", "#8ec5ff"],
       tooltip: { trigger: "axis", borderRadius: 12 },
-      legend: { data: ["握力", "坐站", "走路"] },
-      xAxis: { type: "category", data: hist.map((h) => h.measure_date), axisLine: { lineStyle: { color: "#f0c8d8" } } },
-      yAxis: { type: "value", splitLine: { lineStyle: { color: "#fff0f5" } } },
-      series: [
-        { name: "握力", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.grip_strength) },
-        { name: "坐站", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.chair_stand_time) },
-        { name: "走路", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.walking_time) },
-      ],
+      grid: { left: 70, right: 24, top: 12, bottom: 24 },
+      xAxis: { type: "value", splitLine: { lineStyle: { color: "#e8f8f3" } } },
+      yAxis: { type: "category", data: ["走路 秒", "坐站 秒", "握力 kg"], axisTick: { show: false } },
+      series: [{
+        type: "bar",
+        barWidth: 16,
+        label: { show: true, position: "right", color: "#35514a" },
+        data: [
+          { value: latestH.walking_time, itemStyle: { color: "#7b9cff", borderRadius: [0, 12, 12, 0] } },
+          { value: latestH.chair_stand_time, itemStyle: { color: "#f4c95d", borderRadius: [0, 12, 12, 0] } },
+          { value: latestH.grip_strength, itemStyle: { color: "#3db8a0", borderRadius: [0, 12, 12, 0] } },
+        ],
+      }],
     });
   } catch (e) {
     alert(e.message);
