@@ -49,7 +49,7 @@ def on_startup():
     try:
         # 僅保留兩個指定管理員；移除舊的預設帳號
         for old in db.query(User).all():
-                       if old.username not in {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}:
+                                   if old.username not in {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}:
                 db.delete(old)
         db.commit()
 
@@ -57,7 +57,10 @@ def on_startup():
                     ("littlethanks", "Aa0610", "館管理員", "admin", None),
             ("Netown", "Aa0225991228", "Netown (管理員)", "admin", None),
               allowed = {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}
-        for username, pwd, display, role, email in defaults:
+                                                   ("littlethanks", "Aa0610", "館管理員", "admin", None),
+            ("Netown", "Aa0225991228", "Netown (管理員)", "admin", None),
+            ("nurse1", "Nurse1234", "護理師小美", "nurse", None),
+                allowed = {"bonnie", "chrisavicii", "littlethanks", "Netown", "nurse1", "care1"}
             existing = get_user_by_username(db, username)
             if existing:
                 existing.hashed_password = get_password_hash(pwd)
