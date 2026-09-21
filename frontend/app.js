@@ -267,18 +267,19 @@ async function loadStats() {
       "嚴重肌少症": "#f7a1c4",
     };
     const pie = echarts.init(document.getElementById("pieChart"));
+    const pieRows = (s.sarcopenia_pie || []).slice().reverse();
     pie.setOption({
-      color: ["#8ee0b0", "#ffe08a", "#ffb4a2", "#f7a1c4", "#a8d8ff"],
-      tooltip: { trigger: "item", borderRadius: 12 },
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, borderRadius: 12 },
+      grid: { left: 90, right: 28, top: 12, bottom: 24 },
+      xAxis: { type: "value", splitLine: { lineStyle: { color: "#ffe8f0" } } },
+      yAxis: { type: "category", data: pieRows.map((d) => d.name), axisLine: { show: false }, axisTick: { show: false } },
       series: [{
-        type: "pie",
-        radius: ["42%", "72%"],
-        itemStyle: { borderRadius: 10, borderColor: "#fff", borderWidth: 3 },
-        label: { formatter: "{b}\n{c} 人", color: "#5a4a4a", fontWeight: 600 },
-        data: s.sarcopenia_pie.map((d) => ({
-          name: d.name,
+        type: "bar",
+        barWidth: 18,
+        label: { show: true, position: "right", formatter: "{c} 人", color: "#5a4a4a" },
+        data: pieRows.map((d) => ({
           value: d.value,
-          itemStyle: { color: pieColors[d.name] || d.color || "#cdb4db" },
+          itemStyle: { color: pieColors[d.name] || "#cdb4db", borderRadius: [0, 16, 16, 0] },
         })),
       }],
     });
@@ -298,10 +299,14 @@ async function loadStats() {
       series: [
         {
           name: "檢測次數",
-          type: "bar",
+          type: "line",
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 11,
           data: m.counts,
-          barWidth: "42%",
-          itemStyle: { color: "#8ec5ff", borderRadius: [12, 12, 4, 4] },
+          lineStyle: { width: 3, color: "#8ec5ff" },
+          itemStyle: { color: "#8ec5ff" },
+          areaStyle: { color: "rgba(142,197,255,0.28)" },
         },
         {
           name: "平均握力",
