@@ -1,3 +1,19 @@
+function ensureCuteTheme() {
+  if (document.getElementById("cute-theme")) return;
+  const s = document.createElement("style");
+  s.id = "cute-theme";
+  s.textContent = `
+    body { background: #fff6f8 !important; }
+    .navbar, nav.navbar, .navbar-dark { background: linear-gradient(90deg,#ff8fab,#ffc2d1) !important; }
+    .card { border-radius: 18px !important; border: none !important; box-shadow: 0 8px 20px rgba(255,143,171,.12) !important; }
+    .metric-card { border-radius: 16px !important; background: #fff !important; }
+    #summaryText { background: #fff0f5 !important; border-color: #ffd0e0 !important; color: #5a4a4a !important; }
+    .btn-primary { background: #ff8fab !important; border-color: #ff8fab !important; border-radius: 999px !important; }
+    .btn-outline-primary { color: #e85a8a !important; border-color: #ffc2d1 !important; border-radius: 999px !important; }
+  `;
+  document.head.appendChild(s);
+}
+
 const API = "";  // same origin
 let token = localStorage.getItem("babymomo_token") || "";
 let currentUser = null;
@@ -243,29 +259,62 @@ async function loadStats() {
     document.getElementById("sMulti").textContent = s.multi_abnormal_rate + "%";
     document.getElementById("summaryText").textContent = s.summary_text;
 
-    // Pie
+    ensureCuteTheme();
+    const pieColors = {
+      "正常": "#8ee0b0",
+      "肌少症前期": "#ffe08a",
+      "肌少症": "#ffb4a2",
+      "嚴重肌少症": "#f7a1c4",
+    };
     const pie = echarts.init(document.getElementById("pieChart"));
     pie.setOption({
-      tooltip: { trigger: "item" },
+      color: ["#8ee0b0", "#ffe08a", "#ffb4a2", "#f7a1c4", "#a8d8ff"],
+      tooltip: { trigger: "item", borderRadius: 12 },
       series: [{
         type: "pie",
-        radius: ["40%", "70%"],
-        data: s.sarcopenia_pie.map((d) => ({ name: d.name, value: d.value, itemStyle: { color: d.color } })),
-        label: { formatter: "{b}: {c}" },
+        radius: ["42%", "72%"],
+        itemStyle: { borderRadius: 10, borderColor: "#fff", borderWidth: 3 },
+        label: { formatter: "{b}\n{c} 人", color: "#5a4a4a", fontWeight: 600 },
+        data: s.sarcopenia_pie.map((d) => ({
+          name: d.name,
+          value: d.value,
+          itemStyle: { color: pieColors[d.name] || d.color || "#cdb4db" },
+        })),
       }],
     });
 
-    // Trend
     const trend = echarts.init(document.getElementById("trendChart"));
     const m = s.monthly_trends;
     trend.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { data: ["檢測次數", "平均握力"] },
-      xAxis: { type: "category", data: m.months },
-      yAxis: [{ type: "value", name: "次數" }, { type: "value", name: "kg" }],
+      color: ["#8ec5ff", "#ff8fab"],
+      tooltip: { trigger: "axis", borderRadius: 12 },
+      legend: { data: ["檢測次數", "平均握力"], textStyle: { color: "#5a4a4a" } },
+      grid: { left: 40, right: 40, top: 40, bottom: 30 },
+      xAxis: { type: "category", data: m.months, axisLine: { lineStyle: { color: "#f0c8d8" } } },
+      yAxis: [
+        { type: "value", name: "次數", splitLine: { lineStyle: { color: "#ffe8f0" } } },
+        { type: "value", name: "kg", splitLine: { show: false } },
+      ],
       series: [
-        { name: "檢測次數", type: "bar", data: m.counts, itemStyle: { color: "#3b82f6" } },
-        { name: "平均握力", type: "line", yAxisIndex: 1, data: m.avg_grip, itemStyle: { color: "#10b981" } },
+        {
+          name: "檢測次數",
+          type: "bar",
+          data: m.counts,
+          barWidth: "42%",
+          itemStyle: { color: "#8ec5ff", borderRadius: [12, 12, 4, 4] },
+        },
+        {
+          name: "平均握力",
+          type: "line",
+          yAxisIndex: 1,
+          data: m.avg_grip,
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 10,
+          lineStyle: { width: 3, color: "#ff8fab" },
+          itemStyle: { color: "#ff8fab" },
+          areaStyle: { color: "rgba(255,143,171,0.18)" },
+        },
       ],
     });
   } catch (e) {
@@ -356,14 +405,15 @@ async function openCase(idCard) {
     const hist = [...data.history].reverse();
     const chart = echarts.init(document.getElementById("caseTrendChart"));
     chart.setOption({
-      tooltip: { trigger: "axis" },
+      color: ["#8ee0b0", "#ffc978", "#8ec5ff"],
+      tooltip: { trigger: "axis", borderRadius: 12 },
       legend: { data: ["握力", "坐站", "走路"] },
-      xAxis: { type: "category", data: hist.map((h) => h.measure_date) },
-      yAxis: { type: "value" },
+      xAxis: { type: "category", data: hist.map((h) => h.measure_date), axisLine: { lineStyle: { color: "#f0c8d8" } } },
+      yAxis: { type: "value", splitLine: { lineStyle: { color: "#fff0f5" } } },
       series: [
-        { name: "握力", type: "line", data: hist.map((h) => h.grip_strength) },
-        { name: "坐站", type: "line", data: hist.map((h) => h.chair_stand_time) },
-        { name: "走路", type: "line", data: hist.map((h) => h.walking_time) },
+        { name: "握力", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.grip_strength) },
+        { name: "坐站", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.chair_stand_time) },
+        { name: "走路", type: "line", smooth: true, symbolSize: 8, data: hist.map((h) => h.walking_time) },
       ],
     });
   } catch (e) {
