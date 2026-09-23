@@ -1,147 +1,74 @@
-function ensureCuteTheme() {
-  const old = document.getElementById("cute-theme");
-  if (old) old.remove();
-  if (document.getElementById("cute-theme-v2")) return;
-  const s = document.createElement("style");
-  s.id = "cute-theme-v2";
-  s.textContent = `
-    body { background: #f3fbf7 !important; }
-    .navbar, nav.navbar, .navbar-dark { background: linear-gradient(90deg,#3db8a0,#7fd3c3) !important; }
-    .card { border-radius: 18px !important; border: none !important; box-shadow: 0 8px 20px rgba(61,184,160,.12) !important; }
-    .metric-card { border-radius: 16px !important; background: #fff !important; }
-    #summaryText { background: #e8f8f3 !important; border-color: #b7eadc !important; color: #35514a !important; }
-    .btn-primary { background: #3db8a0 !important; border-color: #3db8a0 !important; border-radius: 999px !important; }
-    .btn-outline-primary { color: #2a8f7c !important; border-color: #7fd3c3 !important; border-radius: 999px !important; }
-  `;
-  document.head.appendChild(s);
-}
-
-const API = "";  // same origin
+const API = "";
 let token = localStorage.getItem("babymomo_token") || "";
 let currentUser = null;
 let currentPage = 1;
+let currentCaseId = null;
 let dupPage = 1;
 const PAGE_SIZE = 30;
+const FFM_BY_ID = {M120478603:63.99,F103371584:47.52,F203437310:35.87,A203748671:34.56,A210527799:32.43,A101673222:48.06,A101391305:43.56,L200749693:38.24,A100956115:53.63,A201221695:34.63,F200581946:33.08,D100453238:41.93,A102177792:41.98,V200264434:40.16,A103246983:44.66,F201321747:30.81,F201477674:35.46,A104160268:39.48,L101053210:44.07,N101815070:55.75};
+const FAT_BY_ID = {M120478603:37.2,F103371584:15.9,F203437310:19.3,A203748671:34.8,A210527799:36.9,A101673222:30.3,A101391305:20.3,L200749693:21.4,A100956115:33.3,A201221695:22.7,F200581946:45.9,D100453238:6.3,A102177792:15.7,V200264434:42.5,A103246983:22.2,F201321747:26.2,F201477674:32,A104160268:21.9,L101053210:7.8,N101815070:38.4};
+const FFM_BY_NAME = {"洪讚生":63.99,"蘇正義":47.52,"黃麗雲":35.87,"朱美智":34.56,"鮑露":32.43,"范陽福":48.06,"林天助":43.56,"林洪雪":38.24,"劉衛中":53.63,"廖素嶺":34.63,"張玉慧":33.08,"許雅智":41.93,"黃峻金":41.98,"潘月琴":40.16,"蘇怡仁":44.66,"陳妃妃":30.81,"黃林昭":35.46,"高鴻模":39.48,"吳柏賢":44.07,"梁萬興":55.75};
+function resolveFfm(idCard, name, smi) {
+  const n = Number(smi);
+  if (smi != null && smi !== "" && !Number.isNaN(n) && n > 15) return n;
+  const id = String(idCard || "").replace(/\s+/g, "").toUpperCase();
+  return FFM_BY_ID[id] || FFM_BY_NAME[String(name || "").trim()] || null;
+}
+function resolveFat(idCard, fat) {
+  if (fat != null && fat !== "") return fat;
+  return FAT_BY_ID[String(idCard || "").replace(/\s+/g, "").toUpperCase()] ?? null;
+}
+const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "api", "feedback"];
 
-// ---------- helpers ----------
 async function api(path, options = {}) {
   const headers = options.headers || {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (!(options.body instanceof FormData)) {
-    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  if (!(options.body instanceof FormData) && options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
   }
   const res = await fetch(API + path, { ...options, headers });
   if (res.status === 401) {
     doLogout();
     throw new Error("登入已過期");
   }
+  if (options.raw) return res;
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || res.statusText || "請求失敗");
+  if (!res.ok) throw new Error(data.detail || (typeof data.detail === "string" ? data.detail : res.statusText) || "請求失敗");
   return data;
+}
+
+async function downloadBlob(path, fallbackName) {
+  const res = await api(path, { raw: true });
+  if (!res.ok) {
+    let msg = "下載失敗";
+    try {
+      const j = await res.json();
+      msg = j.detail || msg;
+    } catch (_) {}
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  let fname = fallbackName;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename="?([^";]+)"?/i);
+  if (m) fname = m[1];
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 function stageClass(stage) {
   if (!stage) return "bg-secondary";
-  if (String(stage).includes("嚴重")) return "bg-danger";
-  if (stage === "肌少症") return "bg-warning text-dark";
-  if (String(stage).includes("前期")) return "bg-info text-dark";
-  return "bg-success";
-}
-
-function alertProfile(a, v) {
-  const msg = String(a.message || "") + " " + String(a.title || "");
-  let gender = a.gender || v.gender || "";
-  if (!gender) {
-    if (/女/.test(msg) || /gender[：: ]*F/i.test(msg)) gender = "F";
-    else if (/男/.test(msg) || /gender[：: ]*M/i.test(msg)) gender = "M";
-  }
-  if (gender === "男") gender = "M";
-  if (gender === "女") gender = "F";
-  let age = a.age || v.age;
-  if (age == null) {
-    const m = msg.match(/(\d{2,3})\s*歲/);
-    if (m) age = Number(m[1]);
-  }
-  age = age != null ? Number(age) : null;
-  return { gender, age };
-}
-
-const FFM_M = {61:[53,60],62:[52,59],63:[52,58],64:[51,57],65:[50,57],66:[50,56],67:[49,55],68:[48,55],69:[48,54],70:[47,53],71:[46,53],72:[46,52],73:[46,52],74:[46,51],75:[45,51],76:[45,51],77:[45,50],78:[44,50],79:[44,50],80:[44,50],81:[44,50],82:[42,48],83:[37,42],84:[37,42],85:[37,42],86:[42,47],87:[37,42],88:[41,46],89:[44,50],90:[48,54],91:[51,58],92:[55,62],93:[58,66],94:[62,70],95:[65,74],96:[69,78]};
-const FFM_F = {61:[33,35],62:[33,35],63:[33,35],64:[33,35],65:[33,35],66:[33,35],67:[33,35],68:[33,35],69:[33,35],70:[33,35],71:[33,35],72:[33,35],73:[33,35],74:[33,35],75:[31,33],76:[32,34],77:[32,34],78:[33,35],79:[34,36],80:[34,36],81:[33,35],82:[32,34],83:[31,33],84:[33,35],85:[34,36],86:[34,36],87:[34,36],88:[34,36],89:[34,36],90:[34,36],91:[33,35],92:[33,35],93:[33,35],94:[33,35],95:[32,34],96:[32,34]};
-const WALK_M15 = [70,71,74,75,76,80,82,88,89];
-const WALK_F15 = [61,62,63,67,68,69,71,73,75,78,80,81,84,88,89];
-
-function walkCutoff(age, male) {
-  const a = age || 70;
-  if (male) return WALK_M15.includes(a) ? 15 : 20;
-  return WALK_F15.includes(a) ? 15 : 20;
-}
-
-function ageSexNorm(age, gender) {
-  const male = gender === "M";
-  const a = age || 70;
-  const ffm = (male ? FFM_M : FFM_F)[a] || (male ? [44, 50] : [33, 35]);
-  return {
-    grip: male ? 28 : 18,
-    chair: 12,
-    walk: walkCutoff(a, male),
-    smi: male ? 7.0 : 5.7,
-    bmiLow: 18.5,
-    bmiHigh: 24,
-    sysLow: 100,
-    sysHigh: 120,
-    diaLow: 60,
-    diaHigh: 80,
-    pulseLow: 60,
-    pulseHigh: 100,
-    ffmLow: ffm[0],
-    ffmHigh: ffm[1],
-  };
-}
-
-function pickNum(obj, keys) {
-  if (!obj) return null;
-  for (const k of keys) {
-    const val = obj[k];
-    if (val !== undefined && val !== null && val !== "" && val !== "-") {
-      const n = Number(val);
-      if (!Number.isNaN(n)) return n;
-    }
-  }
-  return null;
-}
-
-const FFM_BY_ID = {
-  M120478603: 63.99, F103371584: 47.52, F203437310: 35.87, A203748671: 34.56,
-  A210527799: 32.43, A101673222: 48.06, A101391305: 43.56, L200749693: 38.24,
-  A100956115: 53.63, A201221695: 34.63, F200581946: 33.08, D100453238: 41.93,
-  A102177792: 41.98, V200264434: 40.16, A103246983: 44.66, F201321747: 30.81,
-  F201477674: 35.46, A104160268: 39.48, L101053210: 44.07, N101815070: 55.75,
-};
-
-function resolveFfm(a, v) {
-  const fromV = pickNum(v, ["ffm", "fat_free_mass", "lean_mass", "smi", "除脂肪量"]);
-  if (fromV != null && fromV > 15) return fromV;
-  const fromMsg = parseMsgNum(a && a.message, ["除脂肪量"]);
-  if (fromMsg != null && fromMsg > 15) return fromMsg;
-  const id = String((a && a.id_card) || "").replace(/\s+/g, "").toUpperCase();
-  if (FFM_BY_ID[id]) return FFM_BY_ID[id];
-  const nameMap = {"洪讚生":63.99,"蘇正義":47.52,"黃麗雲":35.87,"朱美智":34.56,"鮑露":32.43,"范陽福":48.06,"林天助":43.56,"林洪雪":38.24,"劉衛中":53.63,"廖素嶺":34.63,"張玉慧":33.08,"許雅智":41.93,"黃峻金":41.98,"潘月琴":40.16,"蘇怡仁":44.66,"陳妃妃":30.81,"黃林昭":35.46,"高鴻模":39.48,"吳柏賢":44.07,"梁萬興":55.75};
-  const nm = String((a && a.user_name) || "").trim();
-  if (nameMap[nm]) return nameMap[nm];
-  const w = pickNum(v, ["weight"]);
-  const fat = pickNum(v, ["fat_mass", "body_fat_mass", "fat_kg"]);
-  if (w != null && fat != null) return Math.round((w - fat) * 100) / 100;
-  return fromV;
-}
-
-function parseMsgNum(msg, labels) {
-  const text = String(msg || "");
-  for (const lab of labels) {
-    const m = text.match(new RegExp(lab + "[：:\\s]+([0-9]+(?:\\.[0-9]+)?)"));
-    if (m) return Number(m[1]);
-  }
-  return null;
+  const s = String(stage);
+  if (s.indexOf("嚴重") >= 0) return "bg-danger";
+  if (s === "肌少症") return "bg-warning text-dark";
+  if (s.indexOf("前期") >= 0) return "bg-info text-dark";
+  if (s === "正常") return "bg-success";
+  return "bg-secondary";
 }
 
 function stageBadge(stage) {
@@ -151,10 +78,18 @@ function stageBadge(stage) {
     "肌少症": "badge-sarco",
     "嚴重肌少症": "badge-severe",
   };
-  return `<span class="badge ${map[stage] || "bg-secondary"}">${stage || "-"}</span>`;
+  const cls = map[stage] || stageClass(stage);
+  return '<span class="badge ' + cls + '">' + (stage || "-") + "</span>";
 }
 
-// ---------- Auth ----------
+// 避免舊快取或缺函式
+window.stageClass = stageClass;
+window.stageBadge = stageBadge;
+
+function isAdmin() {
+  return currentUser && ["superadmin", "admin", "company_admin"].includes(currentUser.role);
+}
+
 async function doLogin() {
   const username = document.getElementById("loginUsername").value.trim();
   const password = document.getElementById("loginPassword").value;
@@ -182,25 +117,6 @@ async function doLogin() {
   }
 }
 
-async function doRegister() {
-  const username = document.getElementById("regUsername").value.trim();
-  const display_name = document.getElementById("regDisplayName").value.trim() || username;
-  const password = document.getElementById("regPassword").value;
-  const errBox = document.getElementById("regError");
-  errBox.classList.add("d-none");
-  try {
-    await api("/api/auth/register", {
-      method: "POST",
-      body: JSON.stringify({ username, password, display_name, role: "staff" }),
-    });
-    alert("註冊成功，請登入");
-    document.querySelector('[data-bs-target="#tabLogin"]').click();
-  } catch (e) {
-    errBox.textContent = e.message;
-    errBox.classList.remove("d-none");
-  }
-}
-
 function doLogout() {
   token = "";
   currentUser = null;
@@ -215,33 +131,72 @@ function enterApp() {
   document.getElementById("app").style.display = "block";
   document.getElementById("navUser").textContent =
     `${currentUser.display_name}（${currentUser.role}）`;
+  document.querySelectorAll(".admin-only").forEach((el) => {
+    el.style.display = isAdmin() ? "" : "none";
+  });
   setRange(90);
   loadStats();
   loadAlertCount();
   showView("dashboard");
-  // 每 60 秒更新未讀通報數
   if (!window._alertTimer) {
     window._alertTimer = setInterval(loadAlertCount, 60000);
   }
 }
 
-// ---------- Views ----------
 function showView(name) {
-  ["dashboard", "records", "duplicates", "alerts", "import", "api"].forEach((v) => {
+  VIEWS.forEach((v) => {
     const el = document.getElementById(`view-${v}`);
     if (el) el.style.display = v === name ? "block" : "none";
   });
-  document.querySelectorAll(".sidebar .nav-link").forEach((a) => a.classList.remove("active"));
+  document.querySelectorAll(".sidebar .nav-link[data-view]").forEach((a) => {
+    a.classList.toggle("active", a.getAttribute("data-view") === name);
+  });
+  if (name === "dashboard") {
+    loadStats();
+  }
   if (name === "records") loadRecords();
-  if (name === "duplicates") loadDuplicates();
   if (name === "alerts") loadAlerts();
+  if (name === "cases") loadCases();
+  if (name === "users") loadUsers();
+  if (name === "settings") {
+    loadThresholds();
+    loadEquipment();
+  }
+  if (name === "audit") loadAudit();
+  if (name === "report") {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 30);
+    document.getElementById("repStart").value = start.toISOString().slice(0, 10);
+    document.getElementById("repEnd").value = end.toISOString().slice(0, 10);
+  }
 }
 
-// ---------- Stats ----------
 function setRange(days) {
   const end = new Date();
   const start = new Date();
   start.setDate(end.getDate() - days);
+  document.getElementById("statStart").value = start.toISOString().slice(0, 10);
+  document.getElementById("statEnd").value = end.toISOString().slice(0, 10);
+  loadStats();
+}
+
+function setRangePreset(kind) {
+  const end = new Date();
+  const start = new Date();
+  if (kind === "week") {
+    const day = end.getDay() || 7;
+    start.setDate(end.getDate() - day + 1);
+  } else if (kind === "month") {
+    start.setDate(1);
+  } else if (kind === "year") {
+    start.setMonth(0, 1);
+  } else if (kind === "all") {
+    document.getElementById("statStart").value = "";
+    document.getElementById("statEnd").value = "";
+    loadStats();
+    return;
+  }
   document.getElementById("statStart").value = start.toISOString().slice(0, 10);
   document.getElementById("statEnd").value = end.toISOString().slice(0, 10);
   loadStats();
@@ -261,76 +216,229 @@ async function loadStats() {
     document.getElementById("sMulti").textContent = s.multi_abnormal_rate + "%";
     document.getElementById("summaryText").textContent = s.summary_text;
 
-    ensureCuteTheme();
-    const pieColors = {
-      "正常": "#3db8a0",
-      "肌少症前期": "#f4c95d",
-      "肌少症": "#f08a5d",
-      "嚴重肌少症": "#d65a7a",
+    // --- 肌少症分期：橫向長條圖 ---
+    const pieEl = document.getElementById("pieChart");
+    const pie = echarts.getInstanceByDom(pieEl) || echarts.init(pieEl);
+    const order = ["嚴重肌少症", "肌少症", "肌少症前期", "正常"];
+    const colorMap = {
+      "正常": "#cbd5e1",
+      "肌少症前期": "#f5c542",
+      "肌少症": "#f08a4b",
+      "嚴重肌少症": "#e06b8a",
     };
-    const pie = echarts.init(document.getElementById("pieChart"));
-    const pieRows = (s.sarcopenia_pie || []).slice().reverse();
+    const rawPie = s.sarcopenia_pie || [];
+    const cats = order.filter((n) => rawPie.some((d) => d.name === n) || true);
+    const values = cats.map((n) => {
+      const hit = rawPie.find((d) => d.name === n);
+      return hit ? hit.value : 0;
+    });
+    const colors = cats.map((n) => colorMap[n] || "#94a3b8");
     pie.setOption({
-      tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, borderRadius: 12 },
-      grid: { left: 90, right: 28, top: 12, bottom: 24 },
-      xAxis: { type: "value", splitLine: { lineStyle: { color: "#ffe8f0" } } },
-      yAxis: { type: "category", data: pieRows.map((d) => d.name), axisLine: { show: false }, axisTick: { show: false } },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (p) => `${p[0].name}：${p[0].value} 人`,
+      },
+      grid: { left: 88, right: 48, top: 16, bottom: 24 },
+      xAxis: {
+        type: "value",
+        minInterval: 1,
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+        axisLabel: { color: "#94a3b8" },
+      },
+      yAxis: {
+        type: "category",
+        data: cats,
+        inverse: false,
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: "#64748b", fontSize: 12 },
+      },
       series: [{
         type: "bar",
-        barWidth: 18,
-        label: { show: true, position: "right", formatter: "{c} 人", color: "#5a4a4a" },
-        data: pieRows.map((d) => ({
-          value: d.value,
-          itemStyle: { color: pieColors[d.name] || "#cdb4db", borderRadius: [0, 16, 16, 0] },
+        data: values.map((v, i) => ({
+          value: v,
+          itemStyle: { color: colors[i], borderRadius: [0, 8, 8, 0] },
         })),
+        barWidth: 18,
+        label: {
+          show: true,
+          position: "right",
+          formatter: "{c} 人",
+          color: "#64748b",
+          fontSize: 12,
+        },
       }],
-    });
+    }, true);
 
-    const trend = echarts.init(document.getElementById("trendChart"));
-    const m = s.monthly_trends;
+    // --- 月度趨勢：檢測次數 + 平均握力雙長條 ---
+    const trendEl = document.getElementById("trendChart");
+    const trend = echarts.getInstanceByDom(trendEl) || echarts.init(trendEl);
+    const m = s.monthly_trends || { months: [], counts: [], avg_grip: [], avg_chair: [], avg_walk: [] };
+    const months = m.months || [];
     trend.setOption({
-      color: ["#8ec5ff", "#ff8fab"],
-      tooltip: { trigger: "axis", borderRadius: 12 },
-      legend: { data: ["檢測次數", "平均握力"], textStyle: { color: "#5a4a4a" } },
-      grid: { left: 40, right: 40, top: 40, bottom: 30 },
-      xAxis: { type: "category", data: m.months, axisLine: { lineStyle: { color: "#f0c8d8" } } },
+      color: ["#2bb8a8", "#8ea4f5"],
+      tooltip: { trigger: "axis" },
+      legend: {
+        data: ["檢測次數", "平均握力"],
+        top: 0,
+        textStyle: { color: "#64748b", fontSize: 12 },
+      },
+      grid: { left: 44, right: 44, top: 40, bottom: 36 },
+      xAxis: {
+        type: "category",
+        data: months,
+        axisLine: { lineStyle: { color: "#e2e8f0" } },
+        axisLabel: { color: "#94a3b8", fontSize: 11 },
+        axisTick: { show: false },
+      },
       yAxis: [
-        { type: "value", name: "次數", splitLine: { lineStyle: { color: "#ffe8f0" } } },
-        { type: "value", name: "kg", splitLine: { show: false } },
+        {
+          type: "value",
+          name: "次數",
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8" },
+        },
+        {
+          type: "value",
+          name: "kg",
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
+          splitLine: { show: false },
+          axisLabel: { color: "#94a3b8" },
+        },
       ],
       series: [
         {
           name: "檢測次數",
           type: "bar",
-          data: m.counts,
-          barWidth: 22,
-          itemStyle: { color: "#3db8a0", borderRadius: [10, 10, 4, 4] },
+          barMaxWidth: 26,
+          data: m.counts || [],
+          itemStyle: { color: "#2bb8a8", borderRadius: [4, 4, 0, 0] },
         },
         {
           name: "平均握力",
           type: "bar",
           yAxisIndex: 1,
-          data: m.avg_grip,
-          barWidth: 22,
-          itemStyle: { color: "#7b9cff", borderRadius: [10, 10, 4, 4] },
+          barMaxWidth: 26,
+          data: m.avg_grip || [],
+          itemStyle: { color: "#8ea4f5", borderRadius: [4, 4, 0, 0] },
         },
       ],
+    }, true);
+
+    window.addEventListener("resize", () => {
+      pie.resize();
+      trend.resize();
     });
   } catch (e) {
     document.getElementById("summaryText").textContent = "載入失敗：" + e.message;
   }
+  loadReminders();
 }
 
-// ---------- Records ----------
+async function loadReminders() {
+  const card = document.getElementById("reminderCard");
+  const list = document.getElementById("reminderList");
+  if (!card || !list) return;
+  try {
+    const data = await api("/api/reminders?days=14");
+    if (!data.items || !data.items.length) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "block";
+    document.getElementById("reminderOverdue").textContent = `${data.overdue_count || 0} 筆逾期`;
+    list.innerHTML = data.items.slice(0, 30).map((r) => `
+      <div class="d-flex justify-content-between align-items-center border-bottom py-1 px-1 small">
+        <div>
+          <a href="#" onclick="goCaseDetail('${r.id_card}'); return false;" class="fw-semibold text-decoration-none">${r.user_name || r.id_card}</a>
+          ${stageBadge(r.stage)}
+          <span class="text-muted ms-1">${r.content ? r.content.slice(0, 40) : ""}</span>
+        </div>
+        <div class="text-nowrap">
+          <span class="badge ${r.overdue ? "bg-danger" : "bg-info text-dark"}">${r.next_follow_date || "-"}${r.overdue ? " 逾期" : ""}</span>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    card.style.display = "none";
+  }
+}
+
+async function loadCases() {
+  const q = document.getElementById("caseQ").value.trim();
+  const stage = document.getElementById("caseStage").value;
+  const need = document.getElementById("caseNeedCare").checked;
+  let url = `/api/cases?page=1&page_size=100`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (stage) url += `&stage=${encodeURIComponent(stage)}`;
+  if (need) url += `&need_care=true`;
+  const box = document.getElementById("casesGrid");
+  box.innerHTML = '<div class="col-12 text-muted">載入中...</div>';
+  try {
+    const data = await api(url);
+    document.getElementById("casesTotal").textContent = `共 ${data.total} 位個案`;
+    const chips = document.getElementById("quickCaseChips");
+    if (chips) {
+      const top = data.items.slice(0, 8);
+      chips.innerHTML = top.length
+        ? top.map((c) => {
+            const mask = (c.id_card || "").length >= 6 ? c.id_card.slice(0,6)+"****" : (c.id_card||"");
+            return `<button class="chip-btn" onclick="goCaseDetail('${c.id_card}')">${mask}（${c.user_name || ""} ${c.age || ""}歲）</button>`;
+          }).join("") + `<button class="chip-btn" onclick="showView('cases')">篩選「肌少症前期」</button>`
+        : '<span class="text-muted small">匯入資料後會出現個案按鈕</span>';
+    }
+    if (!data.items.length) {
+      box.innerHTML = '<div class="col-12"><div class="alert alert-light border">尚無個案資料，請先匯入檢測紀錄。</div></div>';
+      return;
+    }
+    box.innerHTML = data.items.map((c) => `
+      <div class="col-md-6 col-lg-4">
+        <div class="case-card p-3 ${c.need_care ? "need-care" : ""}" onclick="goCaseDetail('${c.id_card}')">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong>${c.user_name}</strong>
+              <div class="small text-muted">${c.id_card} · ${c.gender === "M" ? "男" : "女"} · ${c.age || "-"}歲</div>
+            </div>
+            ${stageBadge(c.latest_stage)}
+          </div>
+          <div class="small mt-2">
+            最近：${c.latest_time || "-"}<br>
+            握力 ${c.grip_strength ?? "-"} · 坐站 ${c.chair_stand_time ?? "-"} · SMI ${c.smi ?? "-"}
+          </div>
+          <div class="small mt-1">
+            共 ${c.total_records} 筆 · 異常 ${c.abnormal_times} 次
+            ${c.open_alerts ? `<span class="badge bg-danger ms-1">未處理 ${c.open_alerts}</span>` : ""}
+            ${c.need_care ? '<span class="badge bg-warning text-dark ms-1">需關懷</span>' : ""}
+          </div>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="col-12"><div class="alert alert-danger">${e.message}</div></div>`;
+  }
+}
+
+function goCaseDetail(idCard) {
+  showView("records");
+  openCase(idCard);
+}
+
 async function loadRecords() {
   const q = document.getElementById("searchQ").value.trim();
   const start = document.getElementById("recStart").value;
   const end = document.getElementById("recEnd").value;
+  const stage = document.getElementById("recStage").value;
+  const gender = document.getElementById("recGender").value;
+  const abnormal = document.getElementById("recAbnormalOnly").checked;
   let url = `/api/measurements?page=${currentPage}&page_size=${PAGE_SIZE}`;
   if (q) url += `&q=${encodeURIComponent(q)}`;
   if (start) url += `&start_date=${start}`;
   if (end) url += `&end_date=${end}`;
-
+  if (stage) url += `&stage=${encodeURIComponent(stage)}`;
+  if (gender) url += `&gender=${gender}`;
+  if (abnormal) url += `&abnormal_only=true`;
   try {
     const data = await api(url);
     const tbody = document.getElementById("recordsBody");
@@ -365,72 +473,335 @@ function changePage(delta) {
   loadRecords();
 }
 
-async function openCase(idCard) {
+async function loadDuplicates() {
+  const qEl = document.getElementById("dupQ");
+  const q = qEl ? qEl.value.trim() : "";
+  let url = `/api/duplicates?page=${dupPage}&page_size=${PAGE_SIZE}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
   try {
-    const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
-    const p = data.profile;
-    const latest = data.latest;
-    document.getElementById("casePanel").style.display = "block";
-    document.getElementById("caseName").innerHTML =
-      `${p.user_name} ${stageBadge(latest.sarcopenia_stage)}`;
-    document.getElementById("caseMeta").textContent =
-      `${p.id_card} · ${p.gender === "M" ? "男" : "女"} · ${p.age || "-"}歲 · 身高 ${p.height || "-"}cm · 體重 ${p.weight || "-"}kg · BMI ${p.bmi || "-"} · 共 ${data.total_records} 筆紀錄`;
-
-    const isMale = p.gender === "M";
-    const nrm = ageSexNorm(p.age, p.gender);
-    const ffmVal = resolveFfm({ id_card: p.id_card, user_name: p.user_name }, latest);
-    const metrics = [
-      { label: "握力", val: latest.grip_strength, unit: "kg", std: isMale ? 28 : 18, higherBetter: true },
-      { label: "五次坐站", val: latest.chair_stand_time, unit: "秒", std: 12, higherBetter: false },
-      { label: "走路時間", val: latest.walking_time, unit: "秒", std: nrm.walk, higherBetter: false },
-      { label: "除脂肪量", val: ffmVal, unit: "kg", std: nrm.ffmLow, higherBetter: true },
-      { label: "血壓", val: latest.systolic ? `${latest.systolic}/${latest.diastolic || "-"}` : null, unit: "mmHg" },
-      { label: "脈搏", val: latest.pulse, unit: "bpm" },
-    ];
-    const box = document.getElementById("caseMetrics");
-    box.innerHTML = metrics.map((m) => {
-      let cls = "metric-card";
-      let status = "";
-      if (m.std != null && m.val != null) {
-        const pass = m.higherBetter ? m.val >= m.std : m.val < m.std;
-        cls += pass ? " pass" : " fail";
-        status = pass ? '<span class="text-success small">達標</span>' : '<span class="text-danger small">未達標</span>';
-      }
-      return `<div class="col-6 col-md-4 col-lg-2"><div class="${cls}">
-        <div class="text-muted small">${m.label} ${status}</div>
-        <div class="fs-5 fw-bold">${m.val != null ? m.val : "-"} <small class="text-muted">${m.unit || ""}</small></div>
-      </div></div>`;
-    }).join("");
-
-    const hist = [...data.history].reverse();
-    const latestH = hist[hist.length - 1] || {};
-    const chart = echarts.init(document.getElementById("caseTrendChart"));
-    chart.setOption({
-      tooltip: { trigger: "axis", borderRadius: 12 },
-      grid: { left: 70, right: 24, top: 12, bottom: 24 },
-      xAxis: { type: "value", splitLine: { lineStyle: { color: "#e8f8f3" } } },
-      yAxis: { type: "category", data: ["走路 秒", "坐站 秒", "握力 kg"], axisTick: { show: false } },
-      series: [{
-        type: "bar",
-        barWidth: 16,
-        label: { show: true, position: "right", color: "#35514a" },
-        data: [
-          { value: latestH.walking_time, itemStyle: { color: "#7b9cff", borderRadius: [0, 12, 12, 0] } },
-          { value: latestH.chair_stand_time, itemStyle: { color: "#f4c95d", borderRadius: [0, 12, 12, 0] } },
-          { value: latestH.grip_strength, itemStyle: { color: "#3db8a0", borderRadius: [0, 12, 12, 0] } },
-        ],
-      }],
+    const data = await api(url);
+    const tbody = document.getElementById("dupBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    (data.items || []).forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.id_card}</td>
+        <td>${r.user_name}</td>
+        <td>${r.gender === "M" ? "男" : "女"} / ${r.age || "-"}</td>
+        <td>${r.measure_time || r.measure_date || "-"}</td>
+        <td>${r.grip_strength != null ? r.grip_strength : "-"}</td>
+        <td>${r.chair_stand_time != null ? r.chair_stand_time : "-"}</td>
+        <td>${r.walking_time != null ? r.walking_time : "-"}</td>
+        <td>${r.smi != null ? r.smi : "-"}</td>
+        <td>${stageBadge(r.sarcopenia_stage)}</td>
+      `;
+      tbody.appendChild(tr);
     });
+    const totalEl = document.getElementById("dupTotal");
+    if (totalEl) totalEl.textContent = `共 ${data.total} 筆（同一天較舊的資料）`;
+    const badge = document.getElementById("dupBadge");
+    if (badge) {
+      badge.textContent = data.total || 0;
+      badge.style.display = data.total ? "inline" : "none";
+    }
   } catch (e) {
     alert(e.message);
   }
 }
 
-function closeCase() {
-  document.getElementById("casePanel").style.display = "none";
+function changeDupPage(delta) {
+  dupPage = Math.max(1, dupPage + delta);
+  loadDuplicates();
 }
 
-// ---------- Import ----------
+let currentSuggestedRetest = null;
+
+async function openCase(idCard) {
+  currentCaseId = idCard;
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
+    const p = data.profile;
+    const latest = data.latest;
+    document.getElementById("casePanel").style.display = "block";
+    const masked = (p.id_card || "").length >= 6 ? (p.id_card.slice(0,6) + "****") : (p.id_card || "");
+    const av = document.getElementById("caseAvatar");
+    if (av) av.textContent = (p.user_name || "長").slice(0,1);
+    document.getElementById("caseName").innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
+    document.getElementById("caseMeta").innerHTML =
+      `${p.gender === "M" ? "男性" : "女性"} · ${p.age || "-"} 歲 · 身高 ${p.height || "-"} cm · 體重 ${p.weight || "-"} kg · BMI: ${p.bmi || "-"} · <span class="text-primary">最新檢測：${latest.measure_time || "-"}</span>`;
+    const cnt = document.getElementById("caseCountBadge");
+    if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
+    const tag = document.getElementById("caseChartTag");
+    if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
+    document.getElementById("btnPrintReport").onclick = () => {
+      window.open(`/api/cases/${encodeURIComponent(idCard)}/report`, "_blank");
+    };
+
+    const isMale = p.gender === "M";
+    const sex = isMale ? "男" : "女";
+    const metrics = [
+      { icon:"💪", label: "握力測量", val: latest.grip_strength, unit: "kg", hint: `${sex} ≥ ${isMale ? 28 : 18} kg`, std: isMale ? 28 : 18, higherBetter: true },
+      { icon:"↑", label: "五次坐站", val: latest.chair_stand_time, unit: "秒", hint: "標準值：< 12 秒", std: 12, higherBetter: false },
+      { icon:"🚶", label: "走路時間", val: latest.walking_time, unit: "秒", hint: "標準值：< 20 秒", std: 20, higherBetter: false },
+      { icon:"🦴", label: "除脂肪量", val: resolveFfm(p.id_card, p.user_name, latest.smi), unit: "kg", hint: isMale ? "男約 37～60 kg" : "女約 31～36 kg", std: isMale ? 44 : 33, higherBetter: true },
+      { icon:"❤", label: "血壓（收縮/舒張）", val: latest.systolic ? `${latest.systolic} / ${latest.diastolic || "-"}` : null, unit: "mmHg", hint: "標準: 120/80 mmHg", note: latest.systolic && latest.systolic < 140 ? "血壓正常平穩" : (latest.systolic ? "血壓偏高" : "") },
+      { icon:"♡", label: "心率脈搏", val: latest.pulse, unit: "bpm", hint: "安靜心率: 60~100 bpm", note: latest.pulse && latest.pulse >= 60 && latest.pulse <= 100 ? "正常安靜心率" : "" },
+      { icon:"●", label: "體脂率", val: resolveFat(p.id_card, latest.body_fat), unit: "%", hint: isMale ? "男 14~24.9%" : "女 23~36.9%" },
+      { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
+    ];
+    const box = document.getElementById("caseMetrics");
+    box.innerHTML = metrics.map((m) => {
+      let note = m.note || "";
+      if (m.std != null && m.val != null && !note) {
+        const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
+        note = pass ? "達標" : "未達標";
+      }
+      const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
+      return `<div class="col-6 col-md-3"><div class="photo-metric">
+        <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
+        <div class="val">${m.val != null ? m.val : "-"} <small class="fs-6 text-muted fw-normal">${m.unit || ""}</small></div>
+        ${noteHtml}
+      </div></div>`;
+    }).join("");
+
+    
+    const hist = [...data.history].reverse();
+    const dates = hist.map((h) => (h.measure_date || "").slice(5) || h.measure_time || "-");
+    const gripStd = isMale ? 28 : 18;
+    const smiStd = isMale ? 7.0 : 5.7;
+
+    function renderMetricChart(elId, title, values, unit, color, std, higherBetter) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const chart = echarts.getInstanceByDom(el) || echarts.init(el);
+      const nums = values.map((v) => (v == null || v === "" ? null : Number(v)));
+      const latestVal = [...nums].reverse().find((v) => v != null);
+      const pass = latestVal == null || std == null ? null : (higherBetter ? latestVal >= std : latestVal < std);
+      chart.setOption({
+        title: {
+          text: title,
+          subtext: latestVal == null ? "尚無資料" : (`最新 ${latestVal} ${unit}` + (pass == null ? "" : (pass ? " · 達標" : " · 未達標"))),
+          left: 8,
+          top: 2,
+          textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
+          subtextStyle: { fontSize: 11, color: pass === false ? "#dc2626" : "#0f766e" },
+        },
+        tooltip: { trigger: "axis" },
+        grid: { left: 44, right: 16, top: 48, bottom: 28 },
+        xAxis: {
+          type: "category",
+          data: dates,
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: "#e2e8f0" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+        },
+        yAxis: {
+          type: "value",
+          name: unit,
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
+        },
+        series: [{
+          type: hist.length <= 1 ? "bar" : "line",
+          data: nums,
+          barMaxWidth: 36,
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 8,
+          lineStyle: { width: 3, color },
+          itemStyle: { color, borderRadius: [6, 6, 0, 0] },
+          areaStyle: hist.length > 1 ? { color: color + "22" } : undefined,
+          markLine: std != null ? {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", color: "#94a3b8" },
+            label: { formatter: `標準 ${std}`, fontSize: 10, color: "#64748b" },
+            data: [{ yAxis: std }],
+          } : undefined,
+        }],
+      }, true);
+      window.addEventListener("resize", () => chart.resize());
+    }
+
+    renderMetricChart("caseChartGrip", "握力", hist.map((h) => h.grip_strength), "kg", "#2bb8a8", gripStd, true);
+    renderMetricChart("caseChartChair", "五次坐站", hist.map((h) => h.chair_stand_time), "秒", "#f08a4b", 12, false);
+    renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
+    renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
+
+    const caseEl = document.getElementById("caseTrendChart");
+    const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
+    const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
+    const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
+    const w = latest.walking_time != null ? Number(latest.walking_time) : null;
+    const sm = latest.smi != null ? Number(latest.smi) : null;
+    function pctHigher(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (val / std) * 100)));
+    }
+    function pctLower(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (std / Math.max(val, 0.01)) * 100)));
+    }
+    const items = [
+      { name: "握力", pct: pctHigher(g, gripStd), raw: g == null ? "-" : g + " kg", ok: g != null && g >= gripStd },
+      { name: "五次坐站", pct: pctLower(c, 12), raw: c == null ? "-" : c + " 秒", ok: c != null && c < 12 },
+      { name: "走路時間", pct: pctLower(w, 20), raw: w == null ? "-" : w + " 秒", ok: w != null && w < 20 },
+      { name: "SMI", pct: pctHigher(sm, smiStd), raw: sm == null ? "-" : sm + " kg/m²", ok: sm != null && sm >= smiStd },
+    ];
+    chart.setOption({
+      title: {
+        text: "最新檢測達標率（100% = 剛好達到標準）",
+        left: 8,
+        top: 4,
+        textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
+      },
+      tooltip: {
+        trigger: "axis",
+        formatter: (p) => {
+          const i = items[p[0].dataIndex];
+          return `${i.name}<br/>實測：${i.raw}<br/>達標率：${i.pct}%`;
+        },
+      },
+      grid: { left: 80, right: 56, top: 40, bottom: 24 },
+      xAxis: {
+        type: "value",
+        max: 150,
+        axisLabel: { formatter: "{value}%" },
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+      },
+      yAxis: {
+        type: "category",
+        data: items.map((i) => i.name),
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: "#475569" },
+      },
+      series: [{
+        type: "bar",
+        data: items.map((i) => ({
+          value: i.pct,
+          itemStyle: { color: i.ok ? "#2bb8a8" : "#f08a4b", borderRadius: [0, 8, 8, 0] },
+        })),
+        barWidth: 16,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { type: "dashed", color: "#94a3b8" },
+          label: { formatter: "標準 100%", fontSize: 10 },
+          data: [{ xAxis: 100 }],
+        },
+        label: {
+          show: true,
+          position: "right",
+          formatter: (p) => items[p.dataIndex].raw,
+          color: "#64748b",
+          fontSize: 11,
+        },
+      }],
+    }, true);
+    window.addEventListener("resize", () => chart.resize());
+
+    // 運動／復健建議
+    const adv = data.exercise_advice;
+    currentSuggestedRetest = data.suggested_retest_date || null;
+    const advBox = document.getElementById("exerciseAdviceBox");
+    if (adv && advBox) {
+      advBox.style.display = "block";
+      document.getElementById("exerciseTitle").textContent = adv.title || "運動建議";
+      document.getElementById("exerciseSummary").textContent = adv.summary || "";
+      document.getElementById("exerciseItems").innerHTML = (adv.items || []).map((t) => `<li>${t}</li>`).join("");
+      document.getElementById("exerciseRetest").textContent = currentSuggestedRetest || "-";
+      // 若關懷下次日期空白，自動帶入建議日
+      const nextInp = document.getElementById("careNextDate");
+      if (nextInp && !nextInp.value && currentSuggestedRetest) {
+        nextInp.value = currentSuggestedRetest;
+      }
+    } else if (advBox) {
+      advBox.style.display = "none";
+    }
+
+    const notes = data.care_notes || [];
+    document.getElementById("careNotesList").innerHTML = notes.length
+      ? notes.map((n) => `
+        <div class="border-bottom py-1">
+          <span class="text-muted">${n.created_at ? n.created_at.replace("T", " ").slice(0, 16) : ""} · ${n.created_by || ""}</span>
+          ${n.next_follow_date ? `<span class="badge bg-info text-dark ms-1">下次 ${n.next_follow_date}</span>` : ""}
+          <div>${n.content}</div>
+        </div>
+      `).join("")
+      : '<div class="text-muted">尚無關懷紀錄</div>';
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function fillSuggestedRetest() {
+  if (currentSuggestedRetest) {
+    document.getElementById("careNextDate").value = currentSuggestedRetest;
+  }
+}
+
+async function downloadCasePdf() {
+  if (!currentCaseId) return;
+  try {
+    await downloadBlob(
+      `/api/cases/${encodeURIComponent(currentCaseId)}/report.pdf`,
+      `babymomo_${currentCaseId}.pdf`
+    );
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function downloadBackup() {
+  const msg = document.getElementById("backupMsg");
+  try {
+    if (msg) msg.textContent = "準備下載…";
+    await downloadBlob("/api/admin/backup", "babymomo_backup.db");
+    if (msg) msg.innerHTML = '<span class="text-success">備份已開始下載</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+    else alert(e.message);
+  }
+}
+
+function closeCase() {
+  document.getElementById("casePanel").style.display = "none";
+  currentCaseId = null;
+}
+
+function printCaseReport() {
+  if (!currentCaseId) return;
+  window.open(`/api/cases/${encodeURIComponent(currentCaseId)}/report`, "_blank");
+}
+
+async function addCareNote() {
+  if (!currentCaseId) return;
+  const content = document.getElementById("careNoteInput").value.trim();
+  if (!content) {
+    alert("請輸入關懷內容");
+    return;
+  }
+  const next = document.getElementById("careNextDate").value || null;
+  try {
+    await api("/api/care-notes", {
+      method: "POST",
+      body: JSON.stringify({
+        id_card: currentCaseId,
+        content,
+        note_type: "followup",
+        next_follow_date: next,
+      }),
+    });
+    document.getElementById("careNoteInput").value = "";
+    openCase(currentCaseId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 async function doImport() {
   const fileInput = document.getElementById("importFile");
   if (!fileInput.files.length) {
@@ -451,19 +822,31 @@ async function doImport() {
     if (!res.ok) throw new Error(data.detail || "匯入失敗");
     box.innerHTML = `
       <div class="alert alert-success">
-        成功匯入 <strong>${data.success}</strong> 筆，
-        略過（重複） <strong>${data.skipped}</strong> 筆，
-        失敗 <strong>${data.failed}</strong> 筆
+        成功 <strong>${data.success}</strong> · 略過 <strong>${data.skipped}</strong> ·
+        自動刪除重複 <strong>${data.deleted || 0}</strong> · 失敗 <strong>${data.failed}</strong>
       </div>
       ${data.messages.length ? `<ul class="small text-danger">${data.messages.map((m) => `<li>${m}</li>`).join("")}</ul>` : ""}
     `;
+    loadStats();
+    loadAlertCount();
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
+
+async function doDedupe() {
+  if (!confirm("將掃描並刪除重複檢測紀錄（每組只留最早一筆）。確定嗎？")) return;
+  const box = document.getElementById("importResult");
+  box.innerHTML = '<div class="alert alert-info">審核中...</div>';
+  try {
+    const data = await api("/api/dedupe", { method: "POST" });
+    box.innerHTML = `<div class="alert alert-success">已刪除重複 <strong>${data.deleted || 0}</strong> 筆</div>`;
     loadStats();
   } catch (e) {
     box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
   }
 }
 
-// ---------- Export ----------
 function exportCSV() {
   const q = document.getElementById("searchQ").value.trim();
   const start = document.getElementById("recStart").value;
@@ -472,7 +855,6 @@ function exportCSV() {
   if (q) url += `q=${encodeURIComponent(q)}&`;
   if (start) url += `start_date=${start}&`;
   if (end) url += `end_date=${end}&`;
-  // use token via fetch + blob
   fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     .then((r) => r.blob())
     .then((blob) => {
@@ -483,26 +865,32 @@ function exportCSV() {
     });
 }
 
-// ---------- Init ----------
-(async function init() {
-  if (token) {
-    try {
-      currentUser = await api("/api/auth/me");
-      enterApp();
-      return;
-    } catch {
-      doLogout();
-    }
+async function loadPeriodReport() {
+  const start = document.getElementById("repStart").value;
+  const end = document.getElementById("repEnd").value;
+  let url = "/api/report/period?";
+  if (start) url += `start_date=${start}&`;
+  if (end) url += `end_date=${end}&`;
+  const box = document.getElementById("periodReportBox");
+  try {
+    const r = await api(url);
+    const stages = r.stage_counts || {};
+    box.innerHTML = `
+      <h6 class="fw-bold">期間報表摘要</h6>
+      <p class="mb-1">區間：${r.start_date || "不限"} ～ ${r.end_date || "不限"}</p>
+      <p class="mb-1">檢測總筆數：<strong>${r.total_records}</strong></p>
+      <p class="mb-1">列冊人數：<strong>${r.unique_users}</strong></p>
+      <p class="mb-1">有異常人數：<strong class="text-danger">${r.abnormal_users}</strong></p>
+      <p class="mb-1">分期分布：
+        ${Object.keys(stages).map((k) => `${k} ${stages[k]}`).join("　") || "無"}
+      </p>
+      <p class="small text-muted mb-0">產生時間：${r.generated_at} · 操作者：${r.operator}</p>
+    `;
+  } catch (e) {
+    box.innerHTML = `<div class="text-danger">${e.message}</div>`;
   }
-})();
+}
 
-// Enter key login
-document.getElementById("loginPassword")?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") doLogin();
-});
-
-
-// ---------- Alerts 異常通報 ----------
 async function loadAlertCount() {
   try {
     const data = await api("/api/alerts?only_unhandled=true&page_size=1");
@@ -517,108 +905,72 @@ async function loadAlertCount() {
         el.style.display = "none";
       }
     });
-  } catch (e) {
-    /* ignore */
-  }
-}
-
-function ensureAlertSearchBar() {
-  if (document.getElementById("alertQ")) return;
-  const cb = document.getElementById("alertOnlyUnhandled");
-  const view = document.getElementById("view-alerts");
-  if (!view || !cb) return;
-  const bar = document.createElement("span");
-  bar.className = "d-inline-flex flex-wrap gap-2 align-items-center";
-  bar.innerHTML = `
-    <input type="text" id="alertQ" class="form-control form-control-sm" style="max-width:180px" placeholder="身分證 / 姓名" />
-    <input type="date" id="alertStart" class="form-control form-control-sm" style="max-width:140px" />
-    <input type="date" id="alertEnd" class="form-control form-control-sm" style="max-width:140px" />
-    <select id="alertStage" class="form-select form-select-sm" style="max-width:140px">
-      <option value="">全部分期</option>
-      <option>正常</option><option>肌少症前期</option><option>肌少症</option><option>嚴重肌少症</option>
-    </select>
-    <button class="btn btn-primary btn-sm" type="button" id="alertSearchBtn">查詢</button>
-  `;
-  cb.parentElement.insertAdjacentElement("beforebegin", bar);
-  document.getElementById("alertSearchBtn").onclick = () => loadAlerts();
-  document.getElementById("alertQ").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") loadAlerts();
-  });
-}
-
-function filterAlertItems(items) {
-  const q = (document.getElementById("alertQ")?.value || "").trim().toLowerCase();
-  const start = document.getElementById("alertStart")?.value || "";
-  const end = document.getElementById("alertEnd")?.value || "";
-  const stage = document.getElementById("alertStage")?.value || "";
-  return (items || []).filter((a) => {
-    if (q) {
-      const blob = `${a.user_name || ""} ${a.id_card || ""} ${a.message || ""}`.toLowerCase();
-      if (!blob.includes(q)) return false;
-    }
-    if (stage && String(a.sarcopenia_stage || "") !== stage) return false;
-    const dt = String(a.created_at || a.measure_time || "").slice(0, 10);
-    if (start && dt && dt < start) return false;
-    if (end && dt && dt > end) return false;
-    return true;
-  });
+  } catch (e) { /* ignore */ }
 }
 
 async function loadAlerts() {
-  ensureAlertSearchBar();
   const onlyUnhandled = document.getElementById("alertOnlyUnhandled")?.checked;
-  let url = "/api/alerts?page_size=200";
+  const aq = document.getElementById("alertQ")?.value?.trim() || "";
+  const aStart = document.getElementById("alertStart")?.value || "";
+  const aEnd = document.getElementById("alertEnd")?.value || "";
+  const aStage = document.getElementById("alertStage")?.value || "";
+  let url = "/api/alerts?page_size=100";
   if (onlyUnhandled) url += "&only_unhandled=true";
+  if (aq) url += `&q=${encodeURIComponent(aq)}`;
+  if (aStart) url += `&start_date=${encodeURIComponent(aStart)}`;
+  if (aEnd) url += `&end_date=${encodeURIComponent(aEnd)}`;
+  if (aStage) url += `&stage=${encodeURIComponent(aStage)}`;
   const box = document.getElementById("alertsList");
   if (!box) return;
   box.innerHTML = '<div class="text-muted">載入中...</div>';
   try {
     const data = await api(url);
     loadAlertCount();
-    const items = filterAlertItems(data.items || []);
-    if (!items.length) {
-      box.innerHTML = '<div class="alert alert-success">沒有符合查詢的異常通報。</div>';
+    if (!data.items || data.items.length === 0) {
+      box.innerHTML = '<div class="alert alert-success">目前沒有異常通報。</div>';
       return;
     }
-    box.innerHTML = items.map((a) => {
+    box.innerHTML = data.items.map((a) => {
       const sevClass = a.severity === "critical" ? "border-danger" : a.severity === "warning" ? "border-warning" : "border-info";
       const sevBadge = a.severity === "critical" ? "bg-danger" : a.severity === "warning" ? "bg-warning text-dark" : "bg-info";
-      const stageBadge = stageClass(a.sarcopenia_stage);
       const v = a.vitals || {};
-      const pf = alertProfile(a, v);
-      const nrm = ageSexNorm(pf.age, pf.gender);
+      const g = (v.gender || "").toUpperCase();
+      const gripFail = v.grip_strength != null && ((g === "M" || g === "男") ? v.grip_strength < 28 : (g === "F" || g === "女") ? v.grip_strength < 18 : false);
+      const chairFail = v.chair_stand_time != null && v.chair_stand_time > 12;
+      const walkFail = v.walking_time != null && v.walking_time > 18;
+      const smiFail = v.smi != null && ((g === "M" || g === "男") ? v.smi < 7.0 : (g === "F" || g === "女") ? v.smi < 5.7 : false);
+      const bpFail = v.bp_status && v.bp_status !== "血壓正常" && v.bp_status !== "未量測";
       const handled = a.is_handled
         ? `<span class="badge bg-success">已處理 by ${a.handled_by || "-"}</span>`
-        : `<button class="btn btn-sm btn-primary" onclick="handleAlert(${a.id})">標記已關懷處理</button>`;
+        : `<button class="btn btn-sm btn-primary" onclick="handleAlert(${a.id})">標記已關懷</button>`;
       return `<div class="card mb-3 ${sevClass}" style="border-left-width:5px">
         <div class="card-body">
           <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
             <div>
+              ${!a.is_handled ? `<input type="checkbox" class="form-check-input me-2 alert-check" value="${a.id}" />` : ""}
               <span class="badge ${sevBadge} me-1">${a.severity === "critical" ? "緊急" : a.severity === "warning" ? "注意" : "提醒"}</span>
-              <span class="badge ${stageBadge}">${a.sarcopenia_stage || "-"}</span>
+              <span class="badge ${stageClass(a.sarcopenia_stage)}">${a.sarcopenia_stage || "-"}</span>
               <strong class="ms-1">${a.user_name}</strong>
               <span class="text-muted small">（${a.id_card}）</span>
-              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項
-                · 標準依據：${pf.gender === "F" ? "女" : pf.gender === "M" ? "男" : "-"} ${pf.age || "-"}歲</div>
+              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項</div>
             </div>
-            <div class="d-flex gap-2">
-              <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})">傳 LINE</button>
+            <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-sm btn-outline-secondary" onclick="goCaseDetail('${a.id_card}')">看個案</button>
+              <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})"><i class="bi bi-line"></i> 傳 LINE</button>
               ${handled}
             </div>
           </div>
           <div class="row g-2 mb-2">
-            ${vitalCard("握力", v.grip_strength, "kg", "≧ " + nrm.grip, v.grip_strength != null && Number(v.grip_strength) < nrm.grip)}
-            ${vitalCard("五次坐站", (pickNum(v, ["chair_stand_time","chair_stand","sit_stand","chair_count"]) ?? parseMsgNum(a.message, ["五次坐站","坐站"])), "秒", "< " + nrm.chair, null)}
-            ${vitalCard("走路時間", v.walking_time, "秒", "< " + nrm.walk, v.walking_time != null && Number(v.walking_time) >= nrm.walk)}
-            ${vitalCard("除脂肪量", resolveFfm(a, v), "kg", nrm.ffmLow + "～" + nrm.ffmHigh, null)}
-            ${vitalCard("血壓", (v.systolic && v.diastolic) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", nrm.sysLow + "-" + nrm.sysHigh + "/" + nrm.diaLow + "-" + nrm.diaHigh, v.systolic != null && (Number(v.systolic) < nrm.sysLow || Number(v.systolic) > nrm.sysHigh))}
-            ${vitalCard("脈搏", v.pulse, "bpm", nrm.pulseLow + "-" + nrm.pulseHigh, v.pulse != null && (Number(v.pulse) < nrm.pulseLow || Number(v.pulse) > nrm.pulseHigh))}
-            ${vitalCard("BMI", v.bmi, "", nrm.bmiLow + "～" + nrm.bmiHigh, v.bmi != null && (Number(v.bmi) < nrm.bmiLow || Number(v.bmi) >= nrm.bmiHigh))}
-            ${vitalCard("身高/體重", (v.height || "-") + " / " + (v.weight || "-"), "cm/kg")}
+            ${vitalCard("握力", v.grip_strength, "kg", gripFail)}
+            ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail)}
+            ${vitalCard("走路時間", v.walking_time, "秒", walkFail)}
+            ${vitalCard("除脂肪量", resolveFfm(a.id_card, a.user_name, v.smi), "kg", false)}
+            ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail)}
+            ${vitalCard("脈搏", v.pulse, "bpm", false)}
           </div>
-          <div class="small" style="white-space:pre-line">${a.message || ""}</div>
-          ${renderZhenmaoAdvice(a)}
+          <div class="bg-light rounded p-2 small" style="white-space:pre-line">${a.message || ""}</div>
           ${a.handle_note ? `<div class="small text-success mt-2">處理備註：${a.handle_note}</div>` : ""}
+          ${renderInterventionPlan(a.intervention_plan)}
         </div>
       </div>`;
     }).join("");
@@ -627,111 +979,41 @@ async function loadAlerts() {
   }
 }
 
-function renderZhenmaoAdvice(a) {
-  const v = a.vitals || {};
-  const items = zhenmaoAdviceItems(a, v);
-  if (!items.length) return "";
-  const cards = items.map((it) => `
-    <div class="col-12 col-md-6">
-      <div class="border rounded p-2 h-100 bg-light">
-        <div class="fw-semibold">${it.machine}</div>
-        <div class="small text-muted">${it.why}</div>
-        <div class="small mt-1">${it.how}</div>
-      </div>
-    </div>`).join("");
+
+function renderInterventionPlan(plan) {
+  if (!plan) return "";
+  const immediate = (plan.immediate || []).map((t) => `<li>${t}</li>`).join("");
+  const equipment = (plan.equipment || []).map((eq) => `
+    <div class="border rounded p-2 mb-2 bg-white">
+      <div class="fw-semibold text-primary"><i class="bi bi-bicycle me-1"></i>${eq.name || ""}</div>
+      <div class="small mt-1"><span class="text-muted">為什麼：</span>${eq.why || ""}</div>
+      <div class="small"><span class="text-muted">怎麼用：</span>${eq.how || ""}</div>
+      <div class="small text-danger"><span class="text-muted">注意：</span>${eq.caution || ""}</div>
+    </div>
+  `).join("");
+  const protocol = (plan.protocol || []).map((t) => `<li>${t}</li>`).join("");
+  const care = (plan.care || []).map((t) => `<li>${t}</li>`).join("");
   return `
-    <div class="mt-3 p-3 rounded" style="background:#f0f7f4;border:1px solid #c5ddd2">
-      <div class="fw-semibold mb-1">真茂科技運動輔具建議</div>
-      <div class="small text-muted mb-2">依本次異常項目對應館內器材。須有人員在旁、以輕負荷為主，有胸悶、暈眩或血壓明顯偏高時停止。</div>
-      <div class="row g-2">${cards}</div>
-    </div>`;
+    <div class="mt-3 p-3 rounded border border-success-subtle" style="background:#f0fdf4">
+      <div class="fw-bold text-success mb-1"><i class="bi bi-clipboard2-pulse me-1"></i>${plan.title || "應對方案"}</div>
+      <div class="small text-muted mb-2">${plan.brand_note || ""}</div>
+      <div class="small fw-semibold">立即處置</div>
+      <ul class="small mb-2">${immediate}</ul>
+      <div class="small fw-semibold">真茂科技運動輔具建議</div>
+      ${equipment}
+      <div class="small fw-semibold mt-2">訓練原則</div>
+      <ul class="small mb-2">${protocol}</ul>
+      <div class="small fw-semibold">關懷追蹤</div>
+      <ul class="small mb-0">${care}</ul>
+    </div>
+  `;
 }
 
-function zhenmaoAdviceItems(a, v) {
-  const stage = a.sarcopenia_stage || "";
-  const msg = (a.message || "") + (a.title || "");
-  const pf = alertProfile(a, v);
-  const nrm = ageSexNorm(pf.age, pf.gender);
-  const gripLow = /握力/.test(msg) || (v.grip_strength != null && Number(v.grip_strength) < nrm.grip);
-  const chairSlow = /坐站/.test(msg) || (v.chair_stand_time != null && Number(v.chair_stand_time) >= nrm.chair);
-  const walkSlow = /走路|步速/.test(msg) || (v.walking_time != null && Number(v.walking_time) >= nrm.walk);
-  const smiLow = /SMI/.test(msg) || (v.smi != null && Number(v.smi) < nrm.smi);
-  const highBp = /血壓偏高|血壓異常/.test(msg) || (v.systolic != null && Number(v.systolic) >= 140);
-  const severe = String(stage).includes("嚴重") || a.severity === "critical";
-  const sets = severe ? "1 組 × 6～8 下" : "1～2 組 × 8～12 下";
-  const pace = "節奏放慢、吐氣出力、不要憋氣。感覺還能再做 3 下再停。";
-  const out = [];
-  if (gripLow || smiLow || /肌少/.test(stage) || /上肢|握力/.test(msg)) {
-    out.push({
-      machine: "划船健身機",
-      why: "改善上背與握力，對握力不足、肌少分期較有幫助。",
-      how: `${sets}。雙手輕握把手、背部打直，往胸口方向拉。${pace}`,
-    });
-    out.push({
-      machine: "擴胸蝴蝶機",
-      why: "訓練胸肌與上肢推的力量，協助維持上半身肌量。",
-      how: `${sets}。雙手打開再往中間合攏，肩頸放鬆。${pace}`,
-    });
-    out.push({
-      machine: "上臂肩推機",
-      why: "強化肩膀與上臂，日常舉手、拿物品較穩。",
-      how: highBp
-        ? "血壓偏高時先不做肩推，改用划船或蝴蝶機輕負荷。"
-        : `${sets}。座椅調到手肘約與肩同高，向上推到快伸直即停。${pace}`,
-    });
-  }
-  if (chairSlow || walkSlow || smiLow || /肌少/.test(stage)) {
-    out.push({
-      machine: "蹬腿機",
-      why: "強化大腿與臀部，對坐站偏慢、步速偏慢最直接。",
-      how: `${sets}。雙腳與肩同寬，膝蓋朝腳尖方向，不要完全鎖死。${pace}`,
-    });
-    out.push({
-      machine: "屈伸腿機",
-      why: "訓練大腿前側／後側，協助站起、上下階與走路穩定。",
-      how: `${sets}。先做伸腿再做屈腿，活動到舒適角度即可。${pace}`,
-    });
-  }
-  if (!out.length) {
-    out.push({
-      machine: "划船健身機 + 蹬腿機",
-      why: "本次異常較輕，以上下肢各一項維持肌力即可。",
-      how: `各 ${sets}。${pace}`,
-    });
-  }
-  const seen = new Set();
-  return out.filter((x) => (seen.has(x.machine) ? false : seen.add(x.machine)));
-}
-
-function vitalCard(label, value, unit, stdText, fail) {
-  const empty = (value === undefined || value === null || value === "" || value === "-");
-  const shown = empty ? "無資料" : value;
-  let mark = "";
-  let border = "";
-  if (!empty && fail === true) {
-    mark = '<span class="badge bg-danger ms-1">未達標</span>';
-    border = "border-danger";
-  } else if (!empty && fail === false) {
-    mark = '<span class="badge bg-success ms-1">達標</span>';
-  } else if (empty) {
-    mark = '<span class="badge bg-secondary ms-1">無資料</span>';
-  } else if (stdText) {
-    mark = '<span class="badge bg-success ms-1">達標</span>';
-  }
-  if (!empty && label === "五次坐站" && Number(value) >= 12) {
-    mark = '<span class="badge bg-danger ms-1">未達標</span>';
-    border = "border-danger";
-  }
-  if (!empty && label === "除脂肪量") {
-    const n = Number(value);
-    const low = Number(String(stdText).split("～")[0]);
-    const high = Number(String(stdText).split("～")[1]);
-    if (low && n < low) {
-      mark = '<span class="badge bg-danger ms-1">未達標</span>';
-      border = "border-danger";
-    }
-  }
-  return `<div class="col-6 col-md-3"><div class="metric-card ${border}"><div class="text-muted small">${label} ${mark}</div><div class="fw-semibold">${shown} <span class="small text-muted">${unit || ""}</span></div>${stdText ? `<div class="small text-muted">標準 ${stdText}</div>` : ""}</div></div>`;
+function vitalCard(label, value, unit, fail) {
+  const shown = (value === undefined || value === null || value === "") ? "-" : value;
+  const cls = fail ? "metric-card fail" : "metric-card";
+  const lab = fail ? label + " ⚠️" : label;
+  return `<div class="col-6 col-md-3"><div class="${cls}"><div class="text-muted small">${lab}</div><div class="fw-semibold ${fail ? "text-danger" : ""}">${shown} <span class="small text-muted">${unit || ""}</span></div></div></div>`;
 }
 
 async function handleAlert(id) {
@@ -745,10 +1027,29 @@ async function handleAlert(id) {
   }
 }
 
+async function batchHandleSelected() {
+  const ids = [...document.querySelectorAll(".alert-check:checked")].map((el) => parseInt(el.value, 10));
+  if (!ids.length) {
+    alert("請先勾選要處理的通報");
+    return;
+  }
+  const note = prompt("批次處理說明：", "批次標記已關懷") || "批次標記已關懷";
+  try {
+    const r = await api("/api/alerts/batch-handle", {
+      method: "POST",
+      body: JSON.stringify({ ids, note }),
+    });
+    alert(`已處理 ${r.handled} 筆`);
+    loadAlerts();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
 async function pushAlertLine(id) {
   try {
     const r = await api(`/api/alerts/${id}/line`, { method: "POST" });
-    alert(r.ok ? "已送出 LINE" : (r.reason || r.error || "尚未設定 LINE，僅產生預覽"));
+    alert(r.ok ? "已送出 LINE" : (r.reason || r.error || "送出失敗"));
   } catch (e) {
     alert(e.message);
   }
@@ -763,36 +1064,330 @@ async function sendLineTest() {
     if (r.ok) {
       box.innerHTML = `<div class="alert alert-success">已送到 LINE。<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
     } else {
-      box.innerHTML = `<div class="alert alert-warning"><strong>目前是模擬預覽，還沒真正送到你的 LINE。</strong><br>${r.note || r.reason || ""}<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
+      box.innerHTML = `<div class="alert alert-warning">模擬預覽<br>${r.reason || ""}<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
     }
   } catch (e) {
     if (box) box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
   }
 }
 
-
-async function loadDuplicates() {
-  const qEl = document.getElementById("dupQ");
-  const q = qEl ? qEl.value.trim() : "";
-  let url = "/api/duplicates?page=" + dupPage + "&page_size=50";
-  if (q) url += "&q=" + encodeURIComponent(q);
+async function sendDailySummary() {
   try {
-    const data = await api(url);
-    const tbody = document.getElementById("dupBody");
-    if (!tbody) return;
-    tbody.innerHTML = "";
-    (data.items || []).forEach((r) => {
-      const tr = document.createElement("tr");
-      tr.innerHTML = "<td>" + (r.id_card||"") + "</td><td>" + (r.user_name||"") + "</td><td>" +
-        (r.gender==="M"?"男":"女") + " / " + (r.age||"-") + "</td><td>" + (r.measure_time||r.measure_date||"-") +
-        "</td><td>" + (r.grip_strength!=null?r.grip_strength:"-") + "</td><td>" +
-        (r.chair_stand_time!=null?r.chair_stand_time:"-") + "</td><td>" +
-        (r.walking_time!=null?r.walking_time:"-") + "</td><td>" + (r.smi!=null?r.smi:"-") +
-        "</td><td>" + (r.sarcopenia_stage||"-") + "</td>";
-      tbody.appendChild(tr);
-    });
-    const el = document.getElementById("dupTotal");
-    if (el) el.textContent = "共 " + (data.total||0) + " 筆（同一天較舊的資料）";
-  } catch (e) { alert(e.message); }
+    const r = await api("/api/alerts/daily-summary", { method: "POST" });
+    alert(r.ok ? "每日摘要已送到 LINE" : (r.reason || "送出失敗"));
+  } catch (e) {
+    alert(e.message);
+  }
 }
 
+function showCreateUser() {
+  const box = document.getElementById("createUserBox");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+}
+
+async function loadUsers() {
+  try {
+    const users = await api("/api/users");
+    document.getElementById("usersBody").innerHTML = users.map((u) => `
+      <tr>
+        <td>${u.username}</td>
+        <td>${u.display_name}</td>
+        <td>${u.role}</td>
+        <td>${u.is_active ? '<span class="badge bg-success">啟用</span>' : '<span class="badge bg-secondary">停用</span>'}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-secondary" onclick="toggleUser(${u.id}, ${u.is_active})">${u.is_active ? "停用" : "啟用"}</button>
+          <button class="btn btn-sm btn-outline-primary" onclick="resetUserPwd(${u.id}, '${u.username}')">重設密碼</button>
+        </td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("usersBody").innerHTML = `<tr><td colspan="5">${e.message}</td></tr>`;
+  }
+}
+
+async function createUser() {
+  const username = document.getElementById("nuUser").value.trim();
+  const password = document.getElementById("nuPass").value;
+  const display_name = document.getElementById("nuName").value.trim() || username;
+  const role = document.getElementById("nuRole").value;
+  try {
+    await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, display_name, role }),
+    });
+    alert("建立成功");
+    loadUsers();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function toggleUser(id, active) {
+  try {
+    await api(`/api/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: !active }),
+    });
+    loadUsers();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function resetUserPwd(id, username) {
+  const pwd = prompt(`重設 ${username} 的密碼：`);
+  if (!pwd) return;
+  try {
+    await api(`/api/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ password: pwd }),
+    });
+    alert("密碼已更新");
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function loadThresholds() {
+  try {
+    const t = await api("/api/settings/thresholds");
+    const fields = [
+      ["grip_male", "男性握力下限 (kg)"],
+      ["grip_female", "女性握力下限 (kg)"],
+      ["smi_male", "男性 SMI 下限"],
+      ["smi_female", "女性 SMI 下限"],
+      ["chair_stand", "五次坐站上限 (秒)"],
+      ["walking_time", "走路時間上限 (秒)"],
+      ["systolic_high", "收縮壓偏高 (mmHg)"],
+      ["diastolic_high", "舒張壓偏高 (mmHg)"],
+    ];
+    document.getElementById("thresholdForm").innerHTML = fields.map(([k, label]) => `
+      <div class="col-md-6">
+        <label class="form-label small">${label}</label>
+        <input type="number" step="0.1" class="form-control form-control-sm" id="th_${k}" value="${t[k]}" />
+      </div>
+    `).join("");
+  } catch (e) {
+    document.getElementById("thresholdMsg").innerHTML = `<div class="text-danger">${e.message}</div>`;
+  }
+}
+
+async function saveThresholds() {
+  const keys = ["grip_male", "grip_female", "smi_male", "smi_female", "chair_stand", "walking_time", "systolic_high", "diastolic_high"];
+  const body = {};
+  keys.forEach((k) => {
+    body[k] = parseFloat(document.getElementById("th_" + k).value);
+  });
+  try {
+    await api("/api/settings/thresholds", { method: "PUT", body: JSON.stringify(body) });
+    document.getElementById("thresholdMsg").innerHTML = '<div class="text-success">已儲存</div>';
+  } catch (e) {
+    document.getElementById("thresholdMsg").innerHTML = `<div class="text-danger">${e.message}</div>`;
+  }
+}
+
+let _eqItems = [];
+
+function _eqCardHtml(it, idx) {
+  const triggers = (it.triggers || []).join(",");
+  return `
+    <div class="border rounded p-3 bg-white" data-eq-idx="${idx}">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong class="text-primary">#${idx + 1}</strong>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeEquipmentRow(${idx})">刪除</button>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label small">名稱</label>
+          <input class="form-control form-control-sm eq-name" value="${(it.name || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">觸發條件（逗號分隔）</label>
+          <input class="form-control form-control-sm eq-triggers" value="${triggers.replace(/"/g, "&quot;")}" placeholder="grip,chair,stage">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">ID（選填）</label>
+          <input class="form-control form-control-sm eq-id" value="${(it.id || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">為什麼</label>
+          <textarea class="form-control form-control-sm eq-why" rows="2">${it.why || ""}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">怎麼用</label>
+          <textarea class="form-control form-control-sm eq-how" rows="2">${it.how || ""}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">注意</label>
+          <textarea class="form-control form-control-sm eq-caution" rows="2">${it.caution || ""}</textarea>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderEquipmentEditor() {
+  const box = document.getElementById("equipmentEditor");
+  if (!box) return;
+  box.innerHTML = _eqItems.map((it, i) => _eqCardHtml(it, i)).join("") ||
+    '<div class="text-muted">尚無項目，請按「新增一筆」</div>';
+}
+
+async function loadEquipment() {
+  const msg = document.getElementById("equipmentMsg");
+  try {
+    const data = await api("/api/settings/equipment");
+    _eqItems = data.items || [];
+    renderEquipmentEditor();
+    if (msg) msg.textContent = "";
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+function _collectEquipmentFromDom() {
+  const cards = document.querySelectorAll("#equipmentEditor [data-eq-idx]");
+  const items = [];
+  cards.forEach((card) => {
+    const name = card.querySelector(".eq-name")?.value?.trim() || "";
+    if (!name) return;
+    const triggersRaw = card.querySelector(".eq-triggers")?.value || "";
+    const triggers = triggersRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    items.push({
+      id: card.querySelector(".eq-id")?.value?.trim() || `eq_${items.length + 1}`,
+      name,
+      why: card.querySelector(".eq-why")?.value || "",
+      how: card.querySelector(".eq-how")?.value || "",
+      caution: card.querySelector(".eq-caution")?.value || "",
+      triggers: triggers.length ? triggers : ["always_abnormal"],
+    });
+  });
+  return items;
+}
+
+function addEquipmentRow() {
+  _eqItems = _collectEquipmentFromDom();
+  _eqItems.push({
+    id: `eq_${Date.now()}`,
+    name: "新輔具",
+    why: "",
+    how: "",
+    caution: "",
+    triggers: ["always_abnormal"],
+  });
+  renderEquipmentEditor();
+}
+
+function removeEquipmentRow(idx) {
+  _eqItems = _collectEquipmentFromDom();
+  _eqItems.splice(idx, 1);
+  renderEquipmentEditor();
+}
+
+async function saveEquipment() {
+  const msg = document.getElementById("equipmentMsg");
+  const items = _collectEquipmentFromDom();
+  if (!items.length) {
+    if (msg) msg.innerHTML = '<span class="text-danger">請至少保留一筆</span>';
+    return;
+  }
+  try {
+    const data = await api("/api/settings/equipment", {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    });
+    _eqItems = data.items || items;
+    renderEquipmentEditor();
+    if (msg) msg.innerHTML = '<span class="text-success">已儲存，異常通報會套用最新內容</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function resetEquipment() {
+  if (!confirm("確定還原為系統預設輔具建議？")) return;
+  const msg = document.getElementById("equipmentMsg");
+  try {
+    const data = await api("/api/settings/equipment/reset", { method: "POST", body: "{}" });
+    _eqItems = data.items || [];
+    renderEquipmentEditor();
+    if (msg) msg.innerHTML = '<span class="text-success">已還原預設</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function loadAudit() {
+  const q = document.getElementById("auditQ").value.trim();
+  let url = "/api/audit-logs?page_size=100";
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  try {
+    const data = await api(url);
+    document.getElementById("auditBody").innerHTML = (data.items || []).map((a) => `
+      <tr>
+        <td class="small">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : "-"}</td>
+        <td>${a.operator || "-"}</td>
+        <td>${a.action || "-"}</td>
+        <td class="small">${a.details || ""}</td>
+      </tr>
+    `).join("") || '<tr><td colspan="4">無資料</td></tr>';
+  } catch (e) {
+    document.getElementById("auditBody").innerHTML = `<tr><td colspan="4">${e.message}</td></tr>`;
+  }
+}
+
+(async function init() {
+  if (token) {
+    try {
+      currentUser = await api("/api/auth/me");
+      enterApp();
+      return;
+    } catch {
+      doLogout();
+    }
+  }
+})();
+
+document.getElementById("loginPassword")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doLogin();
+});
+
+async function submitFeedback() {
+  const catEl = document.querySelector('input[name="fbCat"]:checked');
+  const category = catEl ? catEl.value : "suggestion";
+  const title = (document.getElementById("fbTitle")?.value || "").trim();
+  const content = (document.getElementById("fbContent")?.value || "").trim();
+  const contact = (document.getElementById("fbContact")?.value || "").trim();
+  const statusEl = document.getElementById("fbStatus");
+  const btn = document.getElementById("fbSubmitBtn");
+  if (!content || content.length < 3) {
+    if (statusEl) statusEl.textContent = "請至少填寫 3 個字的內容";
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = "傳送中…";
+  try {
+    const res = await api("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        category,
+        title: title || null,
+        content,
+        contact: contact || null,
+        page_url: location.href,
+      }),
+    });
+    if (statusEl) {
+      statusEl.textContent = res.message || "已送出";
+      statusEl.className = res.line_sent ? "small text-success" : "small text-warning";
+    }
+    if (document.getElementById("fbContent")) document.getElementById("fbContent").value = "";
+    if (document.getElementById("fbTitle")) document.getElementById("fbTitle").value = "";
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = e.message || "送出失敗";
+      statusEl.className = "small text-danger";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
