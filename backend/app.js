@@ -544,7 +544,7 @@ async function openCase(idCard) {
       { icon:"💪", label: "握力測量", val: latest.grip_strength, unit: "kg", hint: `${sex} ≥ ${isMale ? 28 : 18} kg`, std: isMale ? 28 : 18, higherBetter: true },
       { icon:"↑", label: "五次坐站", val: latest.chair_stand_time, unit: "秒", hint: "標準值：< 12 秒", std: 12, higherBetter: false },
       { icon:"🚶", label: "走路時間", val: latest.walking_time, unit: "秒", hint: "標準值：< 20 秒", std: 20, higherBetter: false },
-      { icon:"🦴", label: "除脂肪量", val: resolveFfm(p.id_card, p.user_name, latest.smi), unit: "kg", hint: isMale ? "男約 37～60 kg" : "女約 31～36 kg", std: isMale ? 44 : 33, higherBetter: true },
+      { icon:"🦴", label: "除脂肪量", val: resolveFfm(p.id_card, p.user_name, latest.smi), unit: "kg", hint: isMale ? "男約 37～60 kg" : "女約 31～36 kg", std: isMale ? 37 : 31, higherBetter: true },
       { icon:"❤", label: "血壓（收縮/舒張）", val: latest.systolic ? `${latest.systolic} / ${latest.diastolic || "-"}` : null, unit: "mmHg", hint: "標準: 120/80 mmHg", note: latest.systolic && latest.systolic < 140 ? "血壓正常平穩" : (latest.systolic ? "血壓偏高" : "") },
       { icon:"♡", label: "心率脈搏", val: latest.pulse, unit: "bpm", hint: "安靜心率: 60~100 bpm", note: latest.pulse && latest.pulse >= 60 && latest.pulse <= 100 ? "正常安靜心率" : "" },
       { icon:"●", label: "體脂率", val: resolveFat(p.id_card, latest.body_fat), unit: "%", hint: isMale ? "男 14~24.9%" : "女 23~36.9%" },
@@ -628,14 +628,16 @@ async function openCase(idCard) {
     renderMetricChart("caseChartGrip", "握力", hist.map((h) => h.grip_strength), "kg", "#2bb8a8", gripStd, true);
     renderMetricChart("caseChartChair", "五次坐站", hist.map((h) => h.chair_stand_time), "秒", "#f08a4b", 12, false);
     renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
-    renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
+    const ffmNow = resolveFfm(p.id_card, p.user_name, latest.smi);
+    const ffmStd = isMale ? 37 : 31;
+    renderMetricChart("caseChartSmi", "除脂肪量", hist.map((h) => resolveFfm(p.id_card, p.user_name, h.smi)), "kg", "#e06b8a", ffmStd, true);
 
     const caseEl = document.getElementById("caseTrendChart");
     const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
     const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
     const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
     const w = latest.walking_time != null ? Number(latest.walking_time) : null;
-    const sm = latest.smi != null ? Number(latest.smi) : null;
+    const sm = ffmNow != null ? Number(ffmNow) : null;
     function pctHigher(val, std) {
       if (val == null || !std) return 0;
       return Math.round(Math.max(0, Math.min(150, (val / std) * 100)));
@@ -648,7 +650,7 @@ async function openCase(idCard) {
       { name: "握力", pct: pctHigher(g, gripStd), raw: g == null ? "-" : g + " kg", ok: g != null && g >= gripStd },
       { name: "五次坐站", pct: pctLower(c, 12), raw: c == null ? "-" : c + " 秒", ok: c != null && c < 12 },
       { name: "走路時間", pct: pctLower(w, 20), raw: w == null ? "-" : w + " 秒", ok: w != null && w < 20 },
-      { name: "SMI", pct: pctHigher(sm, smiStd), raw: sm == null ? "-" : sm + " kg/m²", ok: sm != null && sm >= smiStd },
+      { name: "除脂肪量", pct: pctHigher(sm, ffmStd), raw: sm == null ? "-" : sm + " kg", ok: sm != null && sm >= ffmStd },
     ];
     chart.setOption({
       title: {
