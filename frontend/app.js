@@ -795,3 +795,4 @@ async function loadDuplicates() {
     if (el) el.textContent = "共 " + (data.total||0) + " 筆（同一天較舊的資料）";
   } catch (e) { alert(e.message); }
 }
+
