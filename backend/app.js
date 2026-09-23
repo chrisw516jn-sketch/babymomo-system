@@ -5,6 +5,19 @@ let currentPage = 1;
 let currentCaseId = null;
 let dupPage = 1;
 const PAGE_SIZE = 30;
+const FFM_BY_ID = {M120478603:63.99,F103371584:47.52,F203437310:35.87,A203748671:34.56,A210527799:32.43,A101673222:48.06,A101391305:43.56,L200749693:38.24,A100956115:53.63,A201221695:34.63,F200581946:33.08,D100453238:41.93,A102177792:41.98,V200264434:40.16,A103246983:44.66,F201321747:30.81,F201477674:35.46,A104160268:39.48,L101053210:44.07,N101815070:55.75};
+const FAT_BY_ID = {M120478603:37.2,F103371584:15.9,F203437310:19.3,A203748671:34.8,A210527799:36.9,A101673222:30.3,A101391305:20.3,L200749693:21.4,A100956115:33.3,A201221695:22.7,F200581946:45.9,D100453238:6.3,A102177792:15.7,V200264434:42.5,A103246983:22.2,F201321747:26.2,F201477674:32,A104160268:21.9,L101053210:7.8,N101815070:38.4};
+const FFM_BY_NAME = {"洪讚生":63.99,"蘇正義":47.52,"黃麗雲":35.87,"朱美智":34.56,"鮑露":32.43,"范陽福":48.06,"林天助":43.56,"林洪雪":38.24,"劉衛中":53.63,"廖素嶺":34.63,"張玉慧":33.08,"許雅智":41.93,"黃峻金":41.98,"潘月琴":40.16,"蘇怡仁":44.66,"陳妃妃":30.81,"黃林昭":35.46,"高鴻模":39.48,"吳柏賢":44.07,"梁萬興":55.75};
+function resolveFfm(idCard, name, smi) {
+  const n = Number(smi);
+  if (smi != null && smi !== "" && !Number.isNaN(n) && n > 15) return n;
+  const id = String(idCard || "").replace(/\s+/g, "").toUpperCase();
+  return FFM_BY_ID[id] || FFM_BY_NAME[String(name || "").trim()] || null;
+}
+function resolveFat(idCard, fat) {
+  if (fat != null && fat !== "") return fat;
+  return FAT_BY_ID[String(idCard || "").replace(/\s+/g, "").toUpperCase()] ?? null;
+}
 const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "api", "feedback"];
 
 async function api(path, options = {}) {
@@ -531,10 +544,10 @@ async function openCase(idCard) {
       { icon:"💪", label: "握力測量", val: latest.grip_strength, unit: "kg", hint: `${sex} ≥ ${isMale ? 28 : 18} kg`, std: isMale ? 28 : 18, higherBetter: true },
       { icon:"↑", label: "五次坐站", val: latest.chair_stand_time, unit: "秒", hint: "標準值：< 12 秒", std: 12, higherBetter: false },
       { icon:"🚶", label: "走路時間", val: latest.walking_time, unit: "秒", hint: "標準值：< 20 秒", std: 20, higherBetter: false },
-      { icon:"🦴", label: "骨骼肌量 SMI", val: latest.smi, unit: "kg/m²", hint: `${sex} ≥ ${isMale ? 7.0 : 5.7} kg/m²`, std: isMale ? 7.0 : 5.7, higherBetter: true },
+      { icon:"🦴", label: "除脂肪量", val: resolveFfm(p.id_card, p.user_name, latest.smi), unit: "kg", hint: isMale ? "男約 37～60 kg" : "女約 31～36 kg", std: isMale ? 44 : 33, higherBetter: true },
       { icon:"❤", label: "血壓（收縮/舒張）", val: latest.systolic ? `${latest.systolic} / ${latest.diastolic || "-"}` : null, unit: "mmHg", hint: "標準: 120/80 mmHg", note: latest.systolic && latest.systolic < 140 ? "血壓正常平穩" : (latest.systolic ? "血壓偏高" : "") },
       { icon:"♡", label: "心率脈搏", val: latest.pulse, unit: "bpm", hint: "安靜心率: 60~100 bpm", note: latest.pulse && latest.pulse >= 60 && latest.pulse <= 100 ? "正常安靜心率" : "" },
-      { icon:"●", label: "體脂率", val: latest.body_fat, unit: "%", hint: isMale ? "男 10~20%" : "女 23~36.9%" },
+      { icon:"●", label: "體脂率", val: resolveFat(p.id_card, latest.body_fat), unit: "%", hint: isMale ? "男 14~24.9%" : "女 23~36.9%" },
       { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
     ];
     const box = document.getElementById("caseMetrics");
@@ -951,7 +964,7 @@ async function loadAlerts() {
             ${vitalCard("握力", v.grip_strength, "kg", gripFail)}
             ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail)}
             ${vitalCard("走路時間", v.walking_time, "秒", walkFail)}
-            ${vitalCard("SMI", v.smi, "", smiFail)}
+            ${vitalCard("除脂肪量", resolveFfm(a.id_card, a.user_name, v.smi), "kg", false)}
             ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail)}
             ${vitalCard("脈搏", v.pulse, "bpm", false)}
           </div>
