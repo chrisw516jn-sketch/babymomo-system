@@ -1,8 +1,8 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, status, Body
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, status, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_, desc
 from typing import List, Optional
@@ -26,6 +26,14 @@ try:
     from models import Feedback
 except Exception:
     Feedback = None
+try:
+    from models import CaseEquipmentPlan
+except Exception:
+    CaseEquipmentPlan = None
+try:
+    from models import SystemIssue
+except Exception:
+    SystemIssue = None
 from schemas import (
     UserCreate, UserUpdate, UserOut, Token, MeasurementCreate, MeasurementOut,
     StatsOut, ImportResult, CareNoteCreate, CareNoteOut, ThresholdsOut,
@@ -99,7 +107,7 @@ def get_thresholds(db: Session) -> dict:
 
 
 def get_equipment_catalog(db: Session) -> list:
-    """讀取管理員可編輯的運動輔具建議目錄。"""
+    """讀取「預設範本」運動輔具建議目錄（非個案專用）。"""
     row = db.query(SystemConfig).filter(SystemConfig.key == "equipment_catalog").first()
     if not row:
         return get_default_equipment_catalog()
@@ -112,10 +120,27 @@ def get_equipment_catalog(db: Session) -> list:
     return get_default_equipment_catalog()
 
 
-def _alert_item_dict(db: Session, a: Alert) -> dict:
-    vitals = _vitals_for_alert(db, a)
+def get_case_equipment_items(db: Session, id_card: str) -> Optional[list]:
+    """取得個案客製化輔具建議；若無則回傳 None（改用系統自動）。"""
+    if not id_card or CaseEquipmentPlan is None:
+        return None
+    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
+    if not row or not row.items_json:
+        return None
+    try:
+        data = json.loads(row.items_json)
+        if isinstance(data, list) and data:
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def build_intervention_for_case(db: Session, id_card: str, vitals: dict, stage: Optional[str] = None) -> dict:
+    """優先使用個案客製輔具；沒有才用預設範本＋條件觸發。"""
+    custom = get_case_equipment_items(db, id_card)
     plan = get_intervention_plan(
-        stage=a.sarcopenia_stage or vitals.get("sarcopenia_stage"),
+        stage=stage or vitals.get("sarcopenia_stage"),
         grip=vitals.get("grip_strength"),
         chair=vitals.get("chair_stand_time"),
         walk=vitals.get("walking_time"),
@@ -123,6 +148,33 @@ def _alert_item_dict(db: Session, a: Alert) -> dict:
         gender=vitals.get("gender"),
         bp_status_text=vitals.get("bp_status"),
         equipment_catalog=get_equipment_catalog(db),
+    )
+    if custom is not None:
+        plan["equipment"] = [
+            {
+                "id": it.get("id") or "",
+                "name": it.get("name") or "",
+                "why": it.get("why") or "",
+                "how": it.get("how") or "",
+                "caution": it.get("caution") or "",
+            }
+            for it in custom
+            if isinstance(it, dict) and (it.get("name") or "").strip()
+        ]
+        plan["equipment_source"] = "custom"
+        plan["brand_note"] = "此為「個案客製化」運動輔具建議，由管理員依個人狀況編輯。"
+    else:
+        plan["equipment_source"] = "auto"
+    return plan
+
+
+def _alert_item_dict(db: Session, a: Alert) -> dict:
+    vitals = _vitals_for_alert(db, a)
+    plan = build_intervention_for_case(
+        db,
+        a.id_card,
+        vitals,
+        stage=a.sarcopenia_stage or vitals.get("sarcopenia_stage"),
     )
     return {
         "id": a.id,
@@ -186,6 +238,11 @@ def on_startup():
         if not db.query(SystemConfig).filter(SystemConfig.key == "thresholds").first():
             db.add(SystemConfig(key="thresholds", value=json.dumps(DEFAULT_THRESHOLDS), updated_by="system"))
             db.commit()
+        # 啟動時若超過 24 小時未健檢則自動執行
+        try:
+            maybe_daily_self_heal(db)
+        except Exception:
+            pass
     finally:
         db.close()
 
@@ -393,12 +450,186 @@ def update_user(
 
 
 # ========== Measurements ==========
-@app.post("/api/measurements", response_model=MeasurementOut, tags=["Measurements"])
-def create_measurement(
-    payload: MeasurementCreate,
+def _netown_msg(code: str, http_status: int = 200):
+    return JSONResponse(status_code=http_status, content={"MessageCode": str(code)})
+
+
+def _apply_netown_fields(rec: Measurement, fields: dict):
+    """把 Netown 解析出的欄位寫入既有/新建 Measurement。"""
+    mapping = [
+        "height", "weight", "bmi", "body_fat", "smi",
+        "systolic", "diastolic", "pulse",
+        "grip_strength", "chair_stand_time", "walking_time",
+    ]
+    for k in mapping:
+        if k in fields and fields[k] is not None:
+            setattr(rec, k, fields[k])
+
+
+def _recalc_measurement(db: Session, rec: Measurement):
+    if (rec.bmi is None or rec.bmi == 0) and rec.height and rec.weight:
+        rec.bmi = calc_bmi(rec.height, rec.weight)
+    stage, abn_count, status_text = judge_sarcopenia(
+        rec.gender, rec.grip_strength, rec.chair_stand_time,
+        rec.walking_time, rec.smi, age=rec.age,
+    )
+    th = get_thresholds(db)
+    if rec.systolic and rec.systolic >= int(th.get("systolic_high", 140)):
+        if status_text == "各項指標正常":
+            status_text = f"血壓偏高 ({rec.systolic}/{rec.diastolic or '?'})"
+        else:
+            status_text += f" / 血壓偏高 ({rec.systolic}/{rec.diastolic or '?'})"
+        abn_count += 1
+    rec.sarcopenia_stage = stage
+    rec.abnormal_count = abn_count
+    rec.status = status_text
+
+
+def handle_netown_upload(body: dict, db: Session, headers: dict) -> JSONResponse:
+    """處理 NETOWN API v2.4 設備上傳。"""
+    try:
+        from netown import is_netown_payload, parse_netown, netown_api_key_ok
+    except Exception as e:
+        return _netown_msg("500", 500)
+
+    if not netown_api_key_ok(dict(headers)):
+        return _netown_msg("401", 401)
+
+    try:
+        parsed = parse_netown(body)
+    except ValueError:
+        return _netown_msg("400", 400)
+    except Exception:
+        return _netown_msg("500", 500)
+
+    id_card = parsed["id_card"]
+    measure_date = parsed["measure_date"]
+    measure_time = parsed["measure_time"]
+    typ = parsed["type"]
+    machine = parsed.get("machine_number") or ""
+
+    try:
+        # 同日合併：找同一身分證當日最新一筆，沒有就新建
+        rec = (
+            db.query(Measurement)
+            .filter(Measurement.id_card == id_card, Measurement.measure_date == measure_date)
+            .order_by(Measurement.measure_time.desc())
+            .first()
+        )
+        if not rec:
+            prev = (
+                db.query(Measurement)
+                .filter(Measurement.id_card == id_card)
+                .order_by(Measurement.measure_time.desc())
+                .first()
+            )
+            rec = Measurement(
+                id_card=id_card,
+                user_name=(prev.user_name if prev else id_card),
+                gender=(prev.gender if prev and prev.gender else "M"),
+                age=(prev.age if prev else None),
+                measure_date=measure_date,
+                measure_time=measure_time,
+                source="netown",
+                created_by=f"netown:{machine}"[:50],
+            )
+            db.add(rec)
+            db.flush()
+        else:
+            # 更新為較新的量測時間
+            if measure_time > (rec.measure_time or ""):
+                rec.measure_time = measure_time
+
+        if parsed.get("is_vital") and parsed.get("fields"):
+            _apply_netown_fields(rec, parsed["fields"])
+            _recalc_measurement(db, rec)
+
+        # 運動摘要附加到 status（不覆蓋分期說明主體）
+        summary = parsed.get("exercise_summary") or ""
+        if summary:
+            extra = f"[Netown/{typ}] {summary}"
+            if rec.status and extra not in (rec.status or ""):
+                rec.status = ((rec.status or "") + " | " + extra)[:500]
+            elif not rec.status:
+                rec.status = extra[:500]
+            if not parsed.get("is_vital"):
+                # 純運動紀錄仍確保有分期欄位
+                if not rec.sarcopenia_stage:
+                    _recalc_measurement(db, rec)
+
+        db.commit()
+        db.refresh(rec)
+
+        if parsed.get("is_vital"):
+            try:
+                create_abnormal_alert(db, rec)
+            except Exception:
+                pass
+
+        add_audit(
+            db,
+            f"netown:{machine}"[:50],
+            "netown_upload",
+            f"{id_card} type={typ} time={measure_time}",
+        )
+        return _netown_msg("200", 200)
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return _netown_msg("500", 500)
+
+
+@app.post("/api/measurements", tags=["Measurements"])
+async def create_measurement(
+    request: Request,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
 ):
+    """
+    雙格式：
+    1) NETOWN 設備：{ID, MachineNumber, Version, Type, MeasureTime, Values}
+       → 回傳 {MessageCode: 200/400/401/500}，不需登入
+    2) 系統內部：MeasurementCreate JSON + Bearer Token
+       → 回傳 MeasurementOut
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        # 非 JSON：若像 Netown 則 400，否則 422
+        return _netown_msg("400", 400)
+
+    try:
+        from netown import is_netown_payload
+        netown_shape = is_netown_payload(body)
+    except Exception:
+        netown_shape = False
+
+    if netown_shape:
+        return handle_netown_upload(body, db, request.headers)
+
+    # ----- 內部 API（需登入）-----
+    auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(401, "需要登入")
+    token = auth[7:].strip()
+    current_user = None
+    try:
+        from jose import jwt as jose_jwt
+        from auth import SECRET_KEY, ALGORITHM
+        payload_tok = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload_tok.get("sub")
+        current_user = get_user_by_username(db, username) if username else None
+    except Exception:
+        current_user = None
+    if current_user is None or not getattr(current_user, "is_active", True):
+        raise HTTPException(401, "登入已過期或無效")
+
+    try:
+        payload = MeasurementCreate(**body)
+    except Exception as e:
+        raise HTTPException(422, f"欄位錯誤：{e}")
+
     measure_date, measure_time = normalize_measure_time(payload.measure_time)
     exists = db.query(Measurement).filter(
         Measurement.id_card == payload.id_card,
@@ -450,6 +681,16 @@ def create_measurement(
     create_abnormal_alert(db, rec)
     add_audit(db, current_user.username, "create_measurement", f"{payload.id_card} {measure_time}")
     return rec
+
+
+@app.post("/api/netown", tags=["Netown"])
+async def netown_endpoint(request: Request, db: Session = Depends(get_db)):
+    """NETOWN 專用別名（與 /api/measurements 相同邏輯）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        return _netown_msg("400", 400)
+    return handle_netown_upload(body, db, request.headers)
 
 
 def _same_day_latest_ids(db: Session) -> set:
@@ -1061,6 +1302,18 @@ def get_case(
         .all()
     )
     advice = get_exercise_advice(latest.sarcopenia_stage)
+    vitals = {
+        "gender": latest.gender,
+        "age": latest.age,
+        "grip_strength": latest.grip_strength,
+        "chair_stand_time": latest.chair_stand_time,
+        "walking_time": latest.walking_time,
+        "smi": latest.smi,
+        "bp_status": bp_status(latest.systolic, latest.diastolic),
+        "sarcopenia_stage": latest.sarcopenia_stage,
+    }
+    intervention = build_intervention_for_case(db, id_card, vitals, stage=latest.sarcopenia_stage)
+    custom_items = get_case_equipment_items(db, id_card)
     return {
         "profile": {
             "id_card": latest.id_card,
@@ -1076,6 +1329,12 @@ def get_case(
         "history": [MeasurementOut.model_validate(r) for r in records],
         "care_notes": [CareNoteOut.model_validate(n) for n in notes],
         "exercise_advice": advice,
+        "intervention_plan": intervention,
+        "equipment_plan": {
+            "is_custom": custom_items is not None,
+            "items": custom_items if custom_items is not None else intervention.get("equipment") or [],
+            "source": "custom" if custom_items is not None else "auto",
+        },
         "suggested_retest_date": suggested_retest_date(
             latest.sarcopenia_stage, latest.measure_date
         ),
@@ -1687,13 +1946,132 @@ def update_threshold_settings(
     return payload
 
 
+def _clean_equipment_items(items) -> list:
+    cleaned = []
+    if not isinstance(items, list):
+        return cleaned
+    for i, it in enumerate(items):
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        if not name:
+            continue
+        cleaned.append({
+            "id": str(it.get("id") or f"eq_{i+1}"),
+            "name": name[:100],
+            "why": str(it.get("why") or "")[:500],
+            "how": str(it.get("how") or "")[:800],
+            "caution": str(it.get("caution") or "")[:400],
+            "triggers": [str(t) for t in (it.get("triggers") or ["always_abnormal"])][:10]
+            if isinstance(it.get("triggers"), list) else ["always_abnormal"],
+        })
+    return cleaned
+
+
+@app.get("/api/cases/{id_card}/equipment", tags=["Cases"])
+def get_case_equipment(
+    id_card: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """取得此個案的運動輔具建議（客製或系統自動）。"""
+    custom = get_case_equipment_items(db, id_card)
+    if custom is not None:
+        return {"id_card": id_card, "is_custom": True, "source": "custom", "items": custom}
+    # 用最新量測產生自動建議
+    latest = (
+        db.query(Measurement)
+        .filter(Measurement.id_card == id_card)
+        .order_by(Measurement.measure_time.desc())
+        .first()
+    )
+    if not latest:
+        return {"id_card": id_card, "is_custom": False, "source": "auto", "items": get_equipment_catalog(db)}
+    vitals = {
+        "gender": latest.gender,
+        "grip_strength": latest.grip_strength,
+        "chair_stand_time": latest.chair_stand_time,
+        "walking_time": latest.walking_time,
+        "smi": latest.smi,
+        "bp_status": bp_status(latest.systolic, latest.diastolic),
+        "sarcopenia_stage": latest.sarcopenia_stage,
+    }
+    plan = build_intervention_for_case(db, id_card, vitals, stage=latest.sarcopenia_stage)
+    return {
+        "id_card": id_card,
+        "is_custom": False,
+        "source": "auto",
+        "items": plan.get("equipment") or [],
+        "user_name": latest.user_name,
+    }
+
+
+@app.put("/api/cases/{id_card}/equipment", tags=["Cases"])
+def put_case_equipment(
+    id_card: str,
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    """為單一個案儲存客製化運動輔具建議（覆蓋系統自動）。"""
+    if CaseEquipmentPlan is None:
+        raise HTTPException(500, "CaseEquipmentPlan 模型未載入")
+    items = _clean_equipment_items(payload.get("items"))
+    if not items:
+        raise HTTPException(400, "請至少保留一筆輔具建議")
+    note = (payload.get("note") or "").strip() or None
+    # 取姓名
+    latest = (
+        db.query(Measurement)
+        .filter(Measurement.id_card == id_card)
+        .order_by(Measurement.measure_time.desc())
+        .first()
+    )
+    user_name = (latest.user_name if latest else None) or payload.get("user_name")
+    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
+    value = json.dumps(items, ensure_ascii=False)
+    if row:
+        row.items_json = value
+        row.note = note
+        row.user_name = user_name
+        row.updated_by = current_user.username
+    else:
+        db.add(CaseEquipmentPlan(
+            id_card=id_card,
+            user_name=user_name,
+            items_json=value,
+            note=note,
+            updated_by=current_user.username,
+        ))
+    db.commit()
+    add_audit(db, current_user.username, "case_equipment_save", f"{id_card} count={len(items)}")
+    return {"ok": True, "id_card": id_card, "is_custom": True, "source": "custom", "items": items}
+
+
+@app.delete("/api/cases/{id_card}/equipment", tags=["Cases"])
+def delete_case_equipment(
+    id_card: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    """刪除個案客製建議，恢復系統依數據自動產生。"""
+    if CaseEquipmentPlan is None:
+        raise HTTPException(500, "CaseEquipmentPlan 模型未載入")
+    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
+    if row:
+        db.delete(row)
+        db.commit()
+        add_audit(db, current_user.username, "case_equipment_reset", id_card)
+    return {"ok": True, "id_card": id_card, "is_custom": False, "source": "auto"}
+
+
 @app.get("/api/settings/equipment", tags=["Settings"])
 def get_equipment_settings(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """取得真茂科技運動輔具建議目錄（所有登入者可讀，管理員可改）。"""
-    return {"items": get_equipment_catalog(db)}
+    """取得預設範本運動輔具建議（僅在「沒有個案客製」時使用）。"""
+    return {"items": get_equipment_catalog(db), "note": "此為預設範本；實際通報以個案客製為優先。"}
 
 
 @app.put("/api/settings/equipment", tags=["Settings"])
@@ -1913,6 +2291,338 @@ def list_feedback(
             for r in rows
         ],
     }
+
+
+def _issue_fingerprint(issue_type: str, related_id: str = "", title: str = "") -> str:
+    return f"{issue_type}|{related_id}|{title}"[:120]
+
+
+def _upsert_open_issue(
+    db: Session,
+    issue_type: str,
+    title: str,
+    detail: str = "",
+    related_id: str = "",
+    severity: str = "warning",
+    auto_fixed: bool = False,
+    status: str = "open",
+):
+    if SystemIssue is None:
+        return None
+    fp = _issue_fingerprint(issue_type, related_id, title)
+    existing = (
+        db.query(SystemIssue)
+        .filter(SystemIssue.fingerprint == fp, SystemIssue.status == "open")
+        .first()
+    )
+    if existing:
+        existing.detail = detail
+        existing.severity = severity
+        existing.auto_fixed = auto_fixed
+        if status != "open":
+            existing.status = status
+            existing.resolved_at = datetime.now(timezone.utc)
+            existing.resolved_by = "system"
+        return existing
+    row = SystemIssue(
+        issue_type=issue_type,
+        severity=severity,
+        title=title,
+        detail=detail,
+        related_id=related_id or None,
+        fingerprint=fp,
+        auto_fixed=auto_fixed,
+        status=status,
+        resolved_by="system" if status != "open" else None,
+        resolved_at=datetime.now(timezone.utc) if status != "open" else None,
+    )
+    db.add(row)
+    return row
+
+
+def run_self_heal(db: Session, trigger: str = "manual") -> dict:
+    """
+    每日／手動系統健檢：
+    - 可自動排除：重複資料、缺 BMI、分期不一致、性別正規化
+    - 無法排除：缺身分證／姓名、孤懸通報等 → 開立待辦給管理員
+    """
+    summary = {
+        "trigger": trigger,
+        "ran_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "auto_fixed": [],
+        "opened": [],
+        "counts": {},
+    }
+    if SystemIssue is None:
+        summary["error"] = "SystemIssue 模型未部署"
+        return summary
+
+    # 1) 重複檢測資料
+    try:
+        deleted, names = purge_duplicate_measurements(db)
+        if deleted:
+            msg = f"已自動刪除 {deleted} 筆重複檢測；例：{', '.join(names[:5])}"
+            summary["auto_fixed"].append({"type": "duplicate", "detail": msg})
+            _upsert_open_issue(
+                db, "duplicate", f"已自動排除 {deleted} 筆重複資料", msg,
+                related_id="batch", severity="info", auto_fixed=True, status="fixed",
+            )
+        summary["counts"]["duplicates_deleted"] = deleted
+    except Exception as e:
+        summary["opened"].append({"type": "duplicate_error", "detail": str(e)})
+        _upsert_open_issue(db, "heal_error", "重複資料排除失敗", str(e), severity="error")
+
+    # 2) 補算 BMI、重算分期／異常數
+    fixed_bmi = 0
+    fixed_stage = 0
+    try:
+        rows = db.query(Measurement).order_by(Measurement.id.asc()).limit(5000).all()
+        for rec in rows:
+            changed = False
+            # BMI
+            if (rec.bmi is None or rec.bmi == 0) and rec.height and rec.weight:
+                try:
+                    new_bmi = calc_bmi(rec.height, rec.weight)
+                    if new_bmi:
+                        rec.bmi = new_bmi
+                        fixed_bmi += 1
+                        changed = True
+                except Exception:
+                    pass
+            # 性別正規化
+            g = (rec.gender or "").strip().upper()
+            if g in ("男", "MALE"):
+                rec.gender = "M"
+                changed = True
+            elif g in ("女", "FEMALE"):
+                rec.gender = "F"
+                changed = True
+            elif g not in ("M", "F") and g:
+                _upsert_open_issue(
+                    db, "invalid_gender",
+                    f"性別無法辨識：{rec.user_name or ''}（{rec.id_card}）",
+                    f"目前值={rec.gender}，紀錄 id={rec.id}",
+                    related_id=str(rec.id),
+                    severity="warning",
+                )
+            # 重算分期
+            try:
+                stage, abn, status_text = judge_sarcopenia(
+                    rec.gender, rec.grip_strength, rec.chair_stand_time,
+                    rec.walking_time, rec.smi, age=rec.age,
+                )
+                if stage != (rec.sarcopenia_stage or "") or abn != (rec.abnormal_count or 0):
+                    rec.sarcopenia_stage = stage
+                    rec.abnormal_count = abn
+                    rec.status = status_text
+                    fixed_stage += 1
+                    changed = True
+            except Exception:
+                pass
+            # 缺關鍵欄位
+            if not (rec.id_card or "").strip():
+                _upsert_open_issue(
+                    db, "missing_id_card",
+                    f"檢測紀錄缺身分證（id={rec.id}）",
+                    f"姓名={rec.user_name} 時間={rec.measure_time}",
+                    related_id=str(rec.id),
+                    severity="error",
+                )
+            if not (rec.user_name or "").strip():
+                _upsert_open_issue(
+                    db, "missing_name",
+                    f"檢測紀錄缺姓名（{rec.id_card or rec.id}）",
+                    f"紀錄 id={rec.id}",
+                    related_id=str(rec.id),
+                    severity="warning",
+                )
+        if fixed_bmi or fixed_stage:
+            db.commit()
+        if fixed_bmi:
+            summary["auto_fixed"].append({"type": "bmi", "detail": f"補算 BMI {fixed_bmi} 筆"})
+            _upsert_open_issue(
+                db, "bmi_fix", f"已自動補算 BMI {fixed_bmi} 筆", "",
+                auto_fixed=True, status="fixed", severity="info",
+            )
+        if fixed_stage:
+            summary["auto_fixed"].append({"type": "stage", "detail": f"重算分期／異常 {fixed_stage} 筆"})
+            _upsert_open_issue(
+                db, "stage_fix", f"已自動重算分期 {fixed_stage} 筆", "",
+                auto_fixed=True, status="fixed", severity="info",
+            )
+        summary["counts"]["bmi_fixed"] = fixed_bmi
+        summary["counts"]["stage_fixed"] = fixed_stage
+    except Exception as e:
+        summary["opened"].append({"type": "recalc_error", "detail": str(e)})
+        _upsert_open_issue(db, "heal_error", "BMI／分期重算失敗", str(e), severity="error")
+
+    # 3) 孤懸通報（measurement_id 指向不存在的紀錄）
+    try:
+        orphan = 0
+        alerts = db.query(Alert).filter(Alert.measurement_id.isnot(None)).limit(2000).all()
+        for a in alerts:
+            exists = db.query(Measurement.id).filter(Measurement.id == a.measurement_id).first()
+            if not exists:
+                orphan += 1
+                _upsert_open_issue(
+                    db, "orphan_alert",
+                    f"孤懸異常通報：{a.user_name}（{a.id_card}）",
+                    f"alert_id={a.id} measurement_id={a.measurement_id} 已不存在，請確認是否標記處理或刪除",
+                    related_id=str(a.id),
+                    severity="warning",
+                )
+        summary["counts"]["orphan_alerts"] = orphan
+    except Exception as e:
+        _upsert_open_issue(db, "heal_error", "孤懸通報檢查失敗", str(e), severity="error")
+
+    # 記錄本次執行時間
+    try:
+        row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
+        val = json.dumps(summary, ensure_ascii=False)[:4000]
+        if row:
+            row.value = val
+            row.updated_by = "system"
+        else:
+            db.add(SystemConfig(key="last_self_heal", value=val, updated_by="system"))
+        db.commit()
+    except Exception:
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    open_count = 0
+    if SystemIssue is not None:
+        open_count = db.query(SystemIssue).filter(SystemIssue.status == "open").count()
+    summary["counts"]["open_issues"] = open_count
+    summary["counts"]["auto_fixed_n"] = len(summary["auto_fixed"])
+    return summary
+
+
+def maybe_daily_self_heal(db: Session) -> Optional[dict]:
+    """若距上次執行超過 24 小時則自動跑一次。"""
+    try:
+        row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
+        if row and row.value:
+            try:
+                prev = json.loads(row.value)
+                ran = prev.get("ran_at") or ""
+                if ran:
+                    last = datetime.strptime(ran[:19], "%Y-%m-%d %H:%M:%S")
+                    if (datetime.now() - last).total_seconds() < 24 * 3600:
+                        return None
+            except Exception:
+                pass
+        return run_self_heal(db, trigger="daily_auto")
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/admin/self-heal", tags=["System"])
+def api_run_self_heal(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    """手動執行系統健檢與自動排除。"""
+    result = run_self_heal(db, trigger=f"manual:{current_user.username}")
+    add_audit(db, current_user.username, "self_heal", json.dumps(result.get("counts", {}), ensure_ascii=False))
+    return result
+
+
+@app.get("/api/admin/self-heal/status", tags=["System"])
+def api_self_heal_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    """查詢上次健檢結果，並在超過 24 小時時自動再跑一次。"""
+    auto = maybe_daily_self_heal(db)
+    row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
+    last = None
+    if row and row.value:
+        try:
+            last = json.loads(row.value)
+        except Exception:
+            last = {"raw": row.value}
+    open_count = 0
+    if SystemIssue is not None:
+        open_count = db.query(SystemIssue).filter(SystemIssue.status == "open").count()
+    return {
+        "last": last,
+        "auto_ran_now": auto is not None,
+        "auto_result": auto,
+        "open_issues": open_count,
+    }
+
+
+@app.get("/api/admin/issues", tags=["System"])
+def list_system_issues(
+    status: str = Query("open"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    if SystemIssue is None:
+        raise HTTPException(500, "SystemIssue 尚未部署，請上傳最新 models.py")
+    # 進入此頁時順便觸發每日健檢
+    maybe_daily_self_heal(db)
+    q = db.query(SystemIssue)
+    if status and status != "all":
+        q = q.filter(SystemIssue.status == status)
+    total = q.count()
+    rows = (
+        q.order_by(SystemIssue.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    return {
+        "total": total,
+        "page": page,
+        "items": [
+            {
+                "id": r.id,
+                "issue_type": r.issue_type,
+                "severity": r.severity,
+                "title": r.title,
+                "detail": r.detail,
+                "related_id": r.related_id,
+                "auto_fixed": r.auto_fixed,
+                "status": r.status,
+                "resolved_by": r.resolved_by,
+                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+                "resolve_note": r.resolve_note,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@app.post("/api/admin/issues/{issue_id}/resolve", tags=["System"])
+def resolve_system_issue(
+    issue_id: int,
+    payload: dict = Body(default={}),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
+):
+    if SystemIssue is None:
+        raise HTTPException(500, "SystemIssue 尚未部署")
+    row = db.query(SystemIssue).get(issue_id)
+    if not row:
+        raise HTTPException(404, "找不到此問題")
+    action = (payload.get("action") or "fixed").lower()
+    if action not in ("fixed", "ignored"):
+        action = "fixed"
+    row.status = action if action == "ignored" else "fixed"
+    if action == "ignored":
+        row.status = "ignored"
+    row.resolved_by = current_user.username
+    row.resolved_at = datetime.now(timezone.utc)
+    row.resolve_note = (payload.get("note") or "").strip() or None
+    db.commit()
+    add_audit(db, current_user.username, "resolve_issue", f"id={issue_id} status={row.status}")
+    return {"ok": True, "id": issue_id, "status": row.status}
 
 
 @app.get("/api/health", tags=["System"])

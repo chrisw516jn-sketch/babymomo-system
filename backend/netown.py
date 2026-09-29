@@ -169,8 +169,12 @@ def parse_netown(body: dict) -> dict:
         }
         # 肌肉量 kg 若無 SMI 可略
         muscle_kg = _f(vals[4]) if len(vals) > 4 else None
-        if muscle_kg and not result["fields"].get("smi"):
+        if muscle_kg:
             result["fields"]["_muscle_kg"] = muscle_kg
+            result["exercise_summary"] = f"肌肉量 {muscle_kg} kg"
+            # 除脂肪量約等於 體重-脂肪量；若無 SMI 仍保留肌肉量在摘要
+        if muscle_kg and not result["fields"].get("smi"):
+            pass
     elif typ == "GripStrength":
         # 握力值、部位(1右2左) — 若僅 2 個值為量測；若 7 個值則為訓練格式誤標
         if len(vals) >= 7:
