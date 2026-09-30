@@ -864,19 +864,21 @@ async def import_file(
         "age": ["age", "年齡"],
         "height": ["height", "身高", "身高cm", "身高(cm)"],
         "weight": ["weight", "體重", "體重kg", "體重(kg)"],
-        "body_fat": ["body_fat", "體脂", "體脂率", "體脂肪", "體脂肪率"],
-        "smi": ["smi", "肌肉量", "骨骼肌量", "smi_kgm2", "骨骼肌指數"],
+        "body_fat": ["body_fat", "體脂", "體脂率", "體脂肪", "體脂肪率", "脂肪"],
+        "smi": ["smi", "骨骼肌指數", "smi_kgm2", "骨骼肌量smi"],
+        "muscle_mass": ["肌肉質量", "肌肉量", "骨骼肌量", "除脂肪量"],
         "systolic": ["systolic", "收縮壓", "sbp", "收縮"],
         "diastolic": ["diastolic", "舒張壓", "dbp", "舒張"],
         "pulse": ["pulse", "脈搏", "心率", "hr"],
         "grip_strength": ["grip_strength", "握力", "握力kg", "握力(kg)"],
         "chair_stand_time": ["chair_stand_time", "五次坐站", "坐站", "chair", "5次坐站", "五次坐立"],
         "walking_time": ["walking_time", "走路時間", "步速", "walk", "起身行走", "TUG"],
-        # 檢測時間／日期：優先對到 Excel 內的日期欄
+        # 真正的日期欄優先；「檢測時間」在貴司 Excel 常是秒數，勿當日期
         "measure_time": [
-            "measure_time", "measure_date", "measured_at", "datetime", "date", "time",
-            "檢測時間", "檢測日期", "量測時間", "量測日期", "測量時間", "測量日期",
-            "日期", "時間", "資料日期", "檢驗日期", "評估日期", "施測日期",
+            "日期", "檢測日期", "量測日期", "測量日期", "資料日期",
+            "檢驗日期", "評估日期", "施測日期", "datetime", "date",
+            "measure_date", "measured_at", "measure_time",
+            "量測時間", "測量時間", "檢測日時",
         ],
     }
     sample_keys = list(rows[0].keys())
@@ -889,10 +891,33 @@ async def import_file(
                 resolved[key] = lower_cols[a.lower()]
                 break
     if "measure_time" not in resolved:
+        # 從樣本判斷哪個欄位看起來像日期時間，避開「檢測時間=10」這種秒數欄
+        skip_names = ("走路時間", "坐站", "五次", "握力", "脈搏", "收縮", "舒張")
+        candidates = []
         for lk, orig in lower_cols.items():
-            if any(k in lk for k in ("日期", "時間", "date", "time", "datetime")):
-                resolved["measure_time"] = orig
-                break
+            if any(s in orig for s in skip_names):
+                continue
+            if any(k in lk for k in ("日期", "date", "datetime", "日時")):
+                candidates.append(orig)
+        if not candidates:
+            for lk, orig in lower_cols.items():
+                if orig in skip_names or "走路" in orig or "坐站" in orig:
+                    continue
+                if any(k in lk for k in ("時間", "time")) and "檢測時間" not in orig:
+                    candidates.append(orig)
+        if candidates:
+            resolved["measure_time"] = candidates[0]
+        else:
+            # 最後才考慮「檢測時間」，且樣本必須像日期
+            for lk, orig in lower_cols.items():
+                if "檢測時間" in orig or lk == "time":
+                    sample = rows[0].get(orig)
+                    md, mt = normalize_measure_time(sample)
+                    if sample is not None and str(sample).strip() and not (
+                        isinstance(sample, (int, float)) and float(sample) < 40000
+                    ) and md and not md.startswith(datetime.now().strftime("%Y-%m-%d")):
+                        resolved["measure_time"] = orig
+                    break
     if "id_card" not in resolved or "user_name" not in resolved:
         raise HTTPException(400, "檔案必須至少包含「身分證」與「姓名」欄位")
 
@@ -957,6 +982,11 @@ async def import_file(
             chair = to_float(get("chair_stand_time"))
             walk = to_float(get("walking_time"))
             smi = to_float(get("smi"))
+            muscle_mass = to_float(get("muscle_mass"))
+            if smi is None and muscle_mass and height and height > 0:
+                # 骨骼肌指數 SMI = 肌肉質量(kg) / 身高(m)^2
+                hm = height / 100.0
+                smi = round(muscle_mass / (hm * hm), 2)
             systolic = to_int(get("systolic"))
             diastolic = to_int(get("diastolic"))
             pulse = to_int(get("pulse"))
@@ -972,7 +1002,22 @@ async def import_file(
                 messages.append(f"第 {idx+2} 列：收縮壓異常 ({systolic})")
                 continue
 
-            measure_date, measure_time = normalize_measure_time(get("measure_time"))
+            raw_time = get("measure_time")
+            # 「檢測時間」若是 5/10/15 這種秒數，改抓「日期」欄
+            def _looks_like_seconds(v):
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    return 0 <= float(v) < 2000
+                s = str(v or "").strip()
+                try:
+                    return s.isdigit() and int(s) < 2000
+                except Exception:
+                    return False
+            if raw_time is None or _looks_like_seconds(raw_time):
+                for alt in ("日期", "檢測日期", "量測日期", "date", "datetime"):
+                    if alt in row and row.get(alt) not in (None, ""):
+                        raw_time = row.get(alt)
+                        break
+            measure_date, measure_time = normalize_measure_time(raw_time)
             tkey = (_norm_id(id_card), measure_time)
             fkey = _fp_key(id_card, measure_time, grip, chair, walk, smi, systolic)
 

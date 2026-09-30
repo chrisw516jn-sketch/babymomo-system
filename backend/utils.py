@@ -204,15 +204,17 @@ def normalize_measure_time(raw) -> Tuple[str, str]:
         now = datetime.now()
         return now.strftime("%Y-%m-%d"), f"{now.strftime('%Y-%m-%d')} {raw.strftime('%H:%M:%S')}"
 
-    # Excel 序號
+    # Excel 序號（約 30000～60000 才是 1982～2064 年）；小數值當秒數不解析
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        try:
-            base = datetime(1899, 12, 30)
-            dt = base + timedelta(days=float(raw))
-            if 1990 <= dt.year <= 2100:
-                return dt.strftime("%Y-%m-%d"), dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            pass
+        n = float(raw)
+        if n >= 20000:
+            try:
+                base = datetime(1899, 12, 30)
+                dt = base + timedelta(days=n)
+                if 1990 <= dt.year <= 2100:
+                    return dt.strftime("%Y-%m-%d"), dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
 
     s = str(raw).strip()
     s = s.replace("年", "-").replace("月", "-").replace("日", " ")
