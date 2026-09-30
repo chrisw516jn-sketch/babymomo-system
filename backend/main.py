@@ -1394,9 +1394,12 @@ th{{background:#f1f5f9}} .meta{{color:#555;font-size:13px;margin-bottom:16px}}
 .badge{{display:inline-block;padding:2px 8px;border-radius:4px;background:#e2e8f0}}
 .advice{{background:#fef3c7;padding:12px;border-radius:8px;margin-top:12px}}
 .advice ul{{margin:8px 0 0;padding-left:20px}}
-@media print{{button{{display:none}}}}
+@media print{{.no-print{{display:none}}}}
 </style></head><body>
-<button onclick="window.print()">列印</button>
+<div class="no-print" style="margin-bottom:12px">
+  <button onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">列印 / 另存 PDF</button>
+  <span style="color:#666;font-size:13px;margin-left:8px">若要存成 PDF：在列印視窗選擇「另存為 PDF」或「Microsoft Print to PDF」</span>
+</div>
 <h1>寶貝機 · 長者體適能檢測報告</h1>
 <div class="meta">產生時間：{datetime.now().strftime("%Y-%m-%d %H:%M")}　操作者：{current_user.display_name}</div>
 <h2>基本資料</h2>
@@ -1425,6 +1428,40 @@ th{{background:#f1f5f9}} .meta{{color:#555;font-size:13px;margin-bottom:16px}}
     return HTMLResponse(html)
 
 
+def _ensure_cjk_font() -> Optional[str]:
+    """尋找或下載可顯示中文的字型，供 PDF 使用。"""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "fonts", "NotoSansTC-Regular.otf"),
+        "/tmp/NotoSansTC-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/mingliu.ttc",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p):
+            return p
+    # 嘗試下載輕量中文字型到 /tmp（僅第一次）
+    dest = "/tmp/NotoSansTC-Regular.otf"
+    urls = [
+        "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
+        "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
+    ]
+    try:
+        import urllib.request
+        for url in urls:
+            try:
+                urllib.request.urlretrieve(url, dest)
+                if os.path.isfile(dest) and os.path.getsize(dest) > 100000:
+                    return dest
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 # ========== Case PDF Report ==========
 @app.get("/api/cases/{id_card}/report.pdf", tags=["Report"])
 def case_pdf_report(
@@ -1448,43 +1485,43 @@ def case_pdf_report(
     advice = get_exercise_advice(latest.sarcopenia_stage)
     retest = suggested_retest_date(latest.sarcopenia_stage, latest.measure_date)
 
-    font_path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
-    if not os.path.isfile(font_path):
-        # fallback common paths
-        for p in (
-            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            "C:/Windows/Fonts/msjh.ttc",
-            "C:/Windows/Fonts/mingliu.ttc",
-        ):
-            if os.path.isfile(p):
-                font_path = p
-                break
-
+    font_path = _ensure_cjk_font()
+    has_cjk = False
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    try:
-        pdf.add_font("Noto", "", font_path)
-        pdf.set_font("Noto", size=14)
-    except Exception:
+    if font_path:
+        try:
+            pdf.add_font("Noto", "", font_path)
+            pdf.set_font("Noto", size=14)
+            has_cjk = True
+        except Exception:
+            has_cjk = False
+    if not has_cjk:
         pdf.set_font("Helvetica", size=14)
 
     def text(s, size=11):
-        try:
-            pdf.set_font("Noto", size=size)
-        except Exception:
-            pdf.set_font("Helvetica", size=size)
-        pdf.multi_cell(0, 7, str(s) if s is not None else "-")
+        s = "-" if s is None else str(s)
+        if has_cjk:
+            try:
+                pdf.set_font("Noto", size=size)
+                pdf.multi_cell(0, 7, s)
+                return
+            except Exception:
+                pass
+        # 無中文字型時：保留數字與英文，中文改為簡易替代，避免整份失敗
+        pdf.set_font("Helvetica", size=size)
+        safe = s.encode("latin-1", errors="replace").decode("latin-1")
+        pdf.multi_cell(0, 7, safe)
 
     text("寶貝機 · 長者體適能檢測報告", 16)
-    text(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}　操作者：{current_user.display_name}", 9)
+    text(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}  操作者：{current_user.display_name}", 9)
     pdf.ln(2)
     text("【基本資料】", 12)
     text(
-        f"{latest.user_name}（{latest.id_card}）　{g}　{latest.age or '-'} 歲\n"
-        f"身高 {latest.height or '-'} cm　體重 {latest.weight or '-'} kg　BMI {latest.bmi or '-'}\n"
-        f"最近檢測：{latest.measure_time or '-'}　分期：{latest.sarcopenia_stage or '-'}"
+        f"{latest.user_name} ({latest.id_card})  {g}  {latest.age or '-'} 歲\n"
+        f"身高 {latest.height or '-'} cm  體重 {latest.weight or '-'} kg  BMI {latest.bmi or '-'}\n"
+        f"最近檢測：{latest.measure_time or '-'}  分期：{latest.sarcopenia_stage or '-'}"
     )
     pdf.ln(1)
     text("【最近指標】", 12)
@@ -1493,7 +1530,7 @@ def case_pdf_report(
         f"五次坐站：{latest.chair_stand_time if latest.chair_stand_time is not None else '-'} 秒\n"
         f"走路時間：{latest.walking_time if latest.walking_time is not None else '-'} 秒\n"
         f"SMI：{latest.smi if latest.smi is not None else '-'}\n"
-        f"血壓：{latest.systolic or '-'}/{latest.diastolic or '-'} mmHg　脈搏：{latest.pulse or '-'} bpm\n"
+        f"血壓：{latest.systolic or '-'}/{latest.diastolic or '-'} mmHg  脈搏：{latest.pulse or '-'} bpm\n"
         f"說明：{latest.status or '-'}"
     )
     pdf.ln(1)

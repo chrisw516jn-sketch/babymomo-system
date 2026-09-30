@@ -5,20 +5,7 @@ let currentPage = 1;
 let currentCaseId = null;
 let dupPage = 1;
 const PAGE_SIZE = 30;
-const FFM_BY_ID = {M120478603:63.99,F103371584:47.52,F203437310:35.87,A203748671:34.56,A210527799:32.43,A101673222:48.06,A101391305:43.56,L200749693:38.24,A100956115:53.63,A201221695:34.63,F200581946:33.08,D100453238:41.93,A102177792:41.98,V200264434:40.16,A103246983:44.66,F201321747:30.81,F201477674:35.46,A104160268:39.48,L101053210:44.07,N101815070:55.75};
-const FAT_BY_ID = {M120478603:37.2,F103371584:15.9,F203437310:19.3,A203748671:34.8,A210527799:36.9,A101673222:30.3,A101391305:20.3,L200749693:21.4,A100956115:33.3,A201221695:22.7,F200581946:45.9,D100453238:6.3,A102177792:15.7,V200264434:42.5,A103246983:22.2,F201321747:26.2,F201477674:32,A104160268:21.9,L101053210:7.8,N101815070:38.4};
-const FFM_BY_NAME = {"洪讚生":63.99,"蘇正義":47.52,"黃麗雲":35.87,"朱美智":34.56,"鮑露":32.43,"范陽福":48.06,"林天助":43.56,"林洪雪":38.24,"劉衛中":53.63,"廖素嶺":34.63,"張玉慧":33.08,"許雅智":41.93,"黃峻金":41.98,"潘月琴":40.16,"蘇怡仁":44.66,"陳妃妃":30.81,"黃林昭":35.46,"高鴻模":39.48,"吳柏賢":44.07,"梁萬興":55.75};
-function resolveFfm(idCard, name, smi) {
-  const n = Number(smi);
-  if (smi != null && smi !== "" && !Number.isNaN(n) && n > 15) return n;
-  const id = String(idCard || "").replace(/\s+/g, "").toUpperCase();
-  return FFM_BY_ID[id] || FFM_BY_NAME[String(name || "").trim()] || null;
-}
-function resolveFat(idCard, fat) {
-  if (fat != null && fat !== "") return fat;
-  return FAT_BY_ID[String(idCard || "").replace(/\s+/g, "").toUpperCase()] ?? null;
-}
-const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "api", "feedback"];
+const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
 
 async function api(path, options = {}) {
   const headers = options.headers || {};
@@ -137,9 +124,15 @@ function enterApp() {
   setRange(90);
   loadStats();
   loadAlertCount();
+  if (isAdmin()) {
+    loadIssueCount();
+  }
   showView("dashboard");
   if (!window._alertTimer) {
-    window._alertTimer = setInterval(loadAlertCount, 60000);
+    window._alertTimer = setInterval(() => {
+      loadAlertCount();
+      if (isAdmin()) loadIssueCount();
+    }, 60000);
   }
 }
 
@@ -163,6 +156,7 @@ function showView(name) {
     loadEquipment();
   }
   if (name === "audit") loadAudit();
+  if (name === "issues") loadIssues();
   if (name === "report") {
     const end = new Date();
     const start = new Date();
@@ -456,6 +450,7 @@ async function loadRecords() {
         <td>${r.chair_stand_time != null ? r.chair_stand_time : "-"}</td>
         <td>${r.walking_time != null ? r.walking_time : "-"}</td>
         <td>${r.smi != null ? r.smi : "-"}</td>
+        <td>${r.body_fat != null ? r.body_fat + "%" : "-"}</td>
         <td>${stageBadge(r.sarcopenia_stage)}</td>
         <td>${r.abnormal_count || 0}</td>
       `;
@@ -535,7 +530,7 @@ async function openCase(idCard) {
     const tag = document.getElementById("caseChartTag");
     if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
     document.getElementById("btnPrintReport").onclick = () => {
-      window.open(`/api/cases/${encodeURIComponent(idCard)}/report`, "_blank");
+      openCaseReport(true);
     };
 
     const isMale = p.gender === "M";
@@ -544,10 +539,10 @@ async function openCase(idCard) {
       { icon:"💪", label: "握力測量", val: latest.grip_strength, unit: "kg", hint: `${sex} ≥ ${isMale ? 28 : 18} kg`, std: isMale ? 28 : 18, higherBetter: true },
       { icon:"↑", label: "五次坐站", val: latest.chair_stand_time, unit: "秒", hint: "標準值：< 12 秒", std: 12, higherBetter: false },
       { icon:"🚶", label: "走路時間", val: latest.walking_time, unit: "秒", hint: "標準值：< 20 秒", std: 20, higherBetter: false },
-      { icon:"🦴", label: "除脂肪量", val: resolveFfm(p.id_card, p.user_name, latest.smi), unit: "kg", hint: isMale ? "男約 37～60 kg" : "女約 31～36 kg", std: isMale ? 37 : 31, higherBetter: true },
+      { icon:"🦴", label: "骨骼肌量 SMI", val: latest.smi, unit: "kg/m²", hint: `${sex} ≥ ${isMale ? 7.0 : 5.7} kg/m²`, std: isMale ? 7.0 : 5.7, higherBetter: true },
       { icon:"❤", label: "血壓（收縮/舒張）", val: latest.systolic ? `${latest.systolic} / ${latest.diastolic || "-"}` : null, unit: "mmHg", hint: "標準: 120/80 mmHg", note: latest.systolic && latest.systolic < 140 ? "血壓正常平穩" : (latest.systolic ? "血壓偏高" : "") },
       { icon:"♡", label: "心率脈搏", val: latest.pulse, unit: "bpm", hint: "安靜心率: 60~100 bpm", note: latest.pulse && latest.pulse >= 60 && latest.pulse <= 100 ? "正常安靜心率" : "" },
-      { icon:"●", label: "體脂率", val: resolveFat(p.id_card, latest.body_fat), unit: "%", hint: isMale ? "男 14~24.9%" : "女 23~36.9%" },
+      { icon:"●", label: "體脂率", val: latest.body_fat, unit: "%", hint: isMale ? "男 10~20%" : "女 23~36.9%" },
       { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
     ];
     const box = document.getElementById("caseMetrics");
@@ -628,16 +623,14 @@ async function openCase(idCard) {
     renderMetricChart("caseChartGrip", "握力", hist.map((h) => h.grip_strength), "kg", "#2bb8a8", gripStd, true);
     renderMetricChart("caseChartChair", "五次坐站", hist.map((h) => h.chair_stand_time), "秒", "#f08a4b", 12, false);
     renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
-    const ffmNow = resolveFfm(p.id_card, p.user_name, latest.smi);
-    const ffmStd = isMale ? 37 : 31;
-    renderMetricChart("caseChartSmi", "除脂肪量", hist.map((h) => resolveFfm(p.id_card, p.user_name, h.smi)), "kg", "#e06b8a", ffmStd, true);
+    renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
 
     const caseEl = document.getElementById("caseTrendChart");
     const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
     const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
     const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
     const w = latest.walking_time != null ? Number(latest.walking_time) : null;
-    const sm = ffmNow != null ? Number(ffmNow) : null;
+    const sm = latest.smi != null ? Number(latest.smi) : null;
     function pctHigher(val, std) {
       if (val == null || !std) return 0;
       return Math.round(Math.max(0, Math.min(150, (val / std) * 100)));
@@ -650,7 +643,7 @@ async function openCase(idCard) {
       { name: "握力", pct: pctHigher(g, gripStd), raw: g == null ? "-" : g + " kg", ok: g != null && g >= gripStd },
       { name: "五次坐站", pct: pctLower(c, 12), raw: c == null ? "-" : c + " 秒", ok: c != null && c < 12 },
       { name: "走路時間", pct: pctLower(w, 20), raw: w == null ? "-" : w + " 秒", ok: w != null && w < 20 },
-      { name: "除脂肪量", pct: pctHigher(sm, ffmStd), raw: sm == null ? "-" : sm + " kg", ok: sm != null && sm >= ffmStd },
+      { name: "SMI", pct: pctHigher(sm, smiStd), raw: sm == null ? "-" : sm + " kg/m²", ok: sm != null && sm >= smiStd },
     ];
     chart.setOption({
       title: {
@@ -734,14 +727,170 @@ async function openCase(idCard) {
         </div>
       `).join("")
       : '<div class="text-muted">尚無關懷紀錄</div>';
+
+    // 個案客製運動輔具建議
+    const eqPlan = data.equipment_plan || {};
+    _caseEqItems = eqPlan.items || [];
+    _caseEqIsCustom = !!eqPlan.is_custom;
+    renderCaseEqEditor();
+    const hint = document.getElementById("caseEqSourceHint");
+    if (hint) {
+      hint.innerHTML = _caseEqIsCustom
+        ? '<span class="text-success">目前為「此個案客製」內容，異常通報會優先使用。</span>'
+        : '<span class="text-muted">目前為系統依數據自動產生。管理員可改成此人專用後儲存。</span>';
+    }
+    const eqMsg = document.getElementById("caseEqMsg");
+    if (eqMsg) eqMsg.textContent = "";
   } catch (e) {
     alert(e.message);
+  }
+}
+
+let _caseEqItems = [];
+let _caseEqIsCustom = false;
+
+function _caseEqCardHtml(it, idx) {
+  return `
+    <div class="border rounded p-2 bg-white" data-case-eq-idx="${idx}">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <strong class="small text-primary">#${idx + 1}</strong>
+        <button type="button" class="btn btn-sm btn-outline-danger py-0 admin-only" onclick="removeCaseEqRow(${idx})">刪除</button>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label small mb-0">器材名稱</label>
+          <input class="form-control form-control-sm case-eq-name" value="${(it.name || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-8">
+          <label class="form-label small mb-0">為什麼適合此人</label>
+          <input class="form-control form-control-sm case-eq-why" value="${(it.why || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-0">怎麼用</label>
+          <textarea class="form-control form-control-sm case-eq-how" rows="2">${it.how || ""}</textarea>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-0">注意事項</label>
+          <textarea class="form-control form-control-sm case-eq-caution" rows="2">${it.caution || ""}</textarea>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderCaseEqEditor() {
+  const box = document.getElementById("caseEqEditor");
+  if (!box) return;
+  box.innerHTML = _caseEqItems.map((it, i) => _caseEqCardHtml(it, i)).join("")
+    || '<div class="text-muted small">尚無項目，請按「新增一筆」後儲存為此個案專用。</div>';
+}
+
+function _collectCaseEqFromDom() {
+  const cards = document.querySelectorAll("#caseEqEditor [data-case-eq-idx]");
+  const items = [];
+  cards.forEach((card) => {
+    const name = card.querySelector(".case-eq-name")?.value?.trim() || "";
+    if (!name) return;
+    items.push({
+      id: `ceq_${items.length + 1}`,
+      name,
+      why: card.querySelector(".case-eq-why")?.value || "",
+      how: card.querySelector(".case-eq-how")?.value || "",
+      caution: card.querySelector(".case-eq-caution")?.value || "",
+    });
+  });
+  return items;
+}
+
+function addCaseEqRow() {
+  _caseEqItems = _collectCaseEqFromDom();
+  _caseEqItems.push({ name: "新器材", why: "", how: "", caution: "" });
+  renderCaseEqEditor();
+}
+
+function removeCaseEqRow(idx) {
+  _caseEqItems = _collectCaseEqFromDom();
+  _caseEqItems.splice(idx, 1);
+  renderCaseEqEditor();
+}
+
+async function saveCaseEquipment() {
+  if (!currentCaseId) return;
+  const msg = document.getElementById("caseEqMsg");
+  const items = _collectCaseEqFromDom();
+  if (!items.length) {
+    if (msg) msg.innerHTML = '<span class="text-danger">請至少保留一筆</span>';
+    return;
+  }
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(currentCaseId)}/equipment`, {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    });
+    _caseEqItems = data.items || items;
+    _caseEqIsCustom = true;
+    renderCaseEqEditor();
+    const hint = document.getElementById("caseEqSourceHint");
+    if (hint) hint.innerHTML = '<span class="text-success">已儲存為「此個案客製」，異常通報會優先使用。</span>';
+    if (msg) msg.innerHTML = '<span class="text-success">已儲存此人專用建議</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function resetCaseEquipment() {
+  if (!currentCaseId) return;
+  if (!confirm("確定刪除此個案的客製建議，改回系統依數據自動產生？")) return;
+  const msg = document.getElementById("caseEqMsg");
+  try {
+    await api(`/api/cases/${encodeURIComponent(currentCaseId)}/equipment`, { method: "DELETE" });
+    // 重新載入個案以取得自動建議
+    await openCase(currentCaseId);
+    if (msg) msg.innerHTML = '<span class="text-success">已恢復系統自動建議</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
   }
 }
 
 function fillSuggestedRetest() {
   if (currentSuggestedRetest) {
     document.getElementById("careNextDate").value = currentSuggestedRetest;
+  }
+}
+
+async function openCaseReport(doPrint) {
+  if (!currentCaseId) return;
+  try {
+    const res = await api(
+      `/api/cases/${encodeURIComponent(currentCaseId)}/report`,
+      { raw: true }
+    );
+    if (!res.ok) {
+      let msg = "無法載入報告";
+      try {
+        const j = await res.json();
+        msg = j.detail || msg;
+      } catch (_) {}
+      throw new Error(msg);
+    }
+    const html = await res.text();
+    const w = window.open("", "_blank");
+    if (!w) {
+      alert("請允許瀏覽器彈出視窗後再試一次");
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    if (doPrint) {
+      setTimeout(() => {
+        try {
+          w.focus();
+          w.print();
+        } catch (_) {}
+      }, 400);
+    }
+  } catch (e) {
+    alert(e.message || "開啟報告失敗");
   }
 }
 
@@ -753,7 +902,10 @@ async function downloadCasePdf() {
       `babymomo_${currentCaseId}.pdf`
     );
   } catch (e) {
-    alert(e.message);
+    // 伺服器 PDF 失敗時：開啟報告並引導「另存為 PDF」
+    console.warn("PDF API failed, fallback print", e);
+    alert("將開啟報告視窗，請在列印對話框選擇「另存為 PDF」或「儲存為 PDF」");
+    await openCaseReport(true);
   }
 }
 
@@ -775,8 +927,7 @@ function closeCase() {
 }
 
 function printCaseReport() {
-  if (!currentCaseId) return;
-  window.open(`/api/cases/${encodeURIComponent(currentCaseId)}/report`, "_blank");
+  openCaseReport(true);
 }
 
 async function addCareNote() {
@@ -942,6 +1093,11 @@ async function loadAlerts() {
       const walkFail = v.walking_time != null && v.walking_time > 18;
       const smiFail = v.smi != null && ((g === "M" || g === "男") ? v.smi < 7.0 : (g === "F" || g === "女") ? v.smi < 5.7 : false);
       const bpFail = v.bp_status && v.bp_status !== "血壓正常" && v.bp_status !== "未量測";
+      const fatFail = v.body_fat != null && (
+        (g === "M" || g === "男") ? (v.body_fat < 10 || v.body_fat > 20) :
+        (g === "F" || g === "女") ? (v.body_fat < 23 || v.body_fat > 36.9) : false
+      );
+      const bmiFail = v.bmi != null && (v.bmi < 18.5 || v.bmi >= 24);
       const handled = a.is_handled
         ? `<span class="badge bg-success">已處理 by ${a.handled_by || "-"}</span>`
         : `<button class="btn btn-sm btn-primary" onclick="handleAlert(${a.id})">標記已關懷</button>`;
@@ -954,7 +1110,7 @@ async function loadAlerts() {
               <span class="badge ${stageClass(a.sarcopenia_stage)}">${a.sarcopenia_stage || "-"}</span>
               <strong class="ms-1">${a.user_name}</strong>
               <span class="text-muted small">（${a.id_card}）</span>
-              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項</div>
+              <div class="small text-muted mt-1">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : ""} · 異常 ${a.abnormal_count || 0} 項 · 標準依據：${g === "M" || g === "男" ? "男" : (g === "F" || g === "女" ? "女" : "")}${v.age != null ? " " + v.age + "歲" : ""}</div>
             </div>
             <div class="d-flex gap-2 flex-wrap">
               <button class="btn btn-sm btn-outline-secondary" onclick="goCaseDetail('${a.id_card}')">看個案</button>
@@ -963,12 +1119,14 @@ async function loadAlerts() {
             </div>
           </div>
           <div class="row g-2 mb-2">
-            ${vitalCard("握力", v.grip_strength, "kg", gripFail)}
-            ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail)}
-            ${vitalCard("走路時間", v.walking_time, "秒", walkFail)}
-            ${vitalCard("除脂肪量", resolveFfm(a.id_card, a.user_name, v.smi), "kg", false)}
-            ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail)}
-            ${vitalCard("脈搏", v.pulse, "bpm", false)}
+            ${vitalCard("握力", v.grip_strength, "kg", gripFail, g === "M" || g === "男" ? "標準 ≥ 28" : (g === "F" || g === "女" ? "標準 ≥ 18" : ""))}
+            ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail, "標準 < 12")}
+            ${vitalCard("走路時間", v.walking_time, "秒", walkFail, "標準 < 20")}
+            ${vitalCard("骨骼肌量 SMI", v.smi, "kg/m²", smiFail, g === "M" || g === "男" ? "標準 ≥ 7.0" : (g === "F" || g === "女" ? "標準 ≥ 5.7" : ""))}
+            ${vitalCard("體脂率", v.body_fat, "%", fatFail, g === "M" || g === "男" ? "參考 10～20%" : (g === "F" || g === "女" ? "參考 23～36.9%" : ""))}
+            ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail, "標準 100-120/60-80")}
+            ${vitalCard("脈搏", v.pulse, "bpm", false, "標準 60～100")}
+            ${vitalCard("BMI", v.bmi, "", bmiFail, "標準 18.5～24")}
           </div>
           <div class="bg-light rounded p-2 small" style="white-space:pre-line">${a.message || ""}</div>
           ${a.handle_note ? `<div class="small text-success mt-2">處理備註：${a.handle_note}</div>` : ""}
@@ -985,6 +1143,9 @@ async function loadAlerts() {
 function renderInterventionPlan(plan) {
   if (!plan) return "";
   const immediate = (plan.immediate || []).map((t) => `<li>${t}</li>`).join("");
+  const src = plan.equipment_source === "custom"
+    ? `<span class="badge bg-success ms-1">個案客製</span>`
+    : `<span class="badge bg-secondary ms-1">系統自動</span>`;
   const equipment = (plan.equipment || []).map((eq) => `
     <div class="border rounded p-2 mb-2 bg-white">
       <div class="fw-semibold text-primary"><i class="bi bi-bicycle me-1"></i>${eq.name || ""}</div>
@@ -997,12 +1158,12 @@ function renderInterventionPlan(plan) {
   const care = (plan.care || []).map((t) => `<li>${t}</li>`).join("");
   return `
     <div class="mt-3 p-3 rounded border border-success-subtle" style="background:#f0fdf4">
-      <div class="fw-bold text-success mb-1"><i class="bi bi-clipboard2-pulse me-1"></i>${plan.title || "應對方案"}</div>
+      <div class="fw-bold text-success mb-1"><i class="bi bi-clipboard2-pulse me-1"></i>${plan.title || "應對方案"}${src}</div>
       <div class="small text-muted mb-2">${plan.brand_note || ""}</div>
       <div class="small fw-semibold">立即處置</div>
       <ul class="small mb-2">${immediate}</ul>
-      <div class="small fw-semibold">真茂科技運動輔具建議</div>
-      ${equipment}
+      <div class="small fw-semibold">運動輔具建議 ${src}</div>
+      ${equipment || '<div class="small text-muted">尚無輔具建議</div>'}
       <div class="small fw-semibold mt-2">訓練原則</div>
       <ul class="small mb-2">${protocol}</ul>
       <div class="small fw-semibold">關懷追蹤</div>
@@ -1011,11 +1172,18 @@ function renderInterventionPlan(plan) {
   `;
 }
 
-function vitalCard(label, value, unit, fail) {
+function vitalCard(label, value, unit, fail, hint) {
   const shown = (value === undefined || value === null || value === "") ? "-" : value;
   const cls = fail ? "metric-card fail" : "metric-card";
-  const lab = fail ? label + " ⚠️" : label;
-  return `<div class="col-6 col-md-3"><div class="${cls}"><div class="text-muted small">${lab}</div><div class="fw-semibold ${fail ? "text-danger" : ""}">${shown} <span class="small text-muted">${unit || ""}</span></div></div></div>`;
+  const badge = fail
+    ? `<span class="badge bg-danger ms-1" style="font-size:10px">未達標</span>`
+    : (value !== undefined && value !== null && value !== "" ? `<span class="badge bg-success ms-1" style="font-size:10px">達標</span>` : "");
+  const hintHtml = hint ? `<div class="small text-muted mt-1">${hint}</div>` : "";
+  return `<div class="col-6 col-md-3"><div class="${cls}" style="min-height:88px">
+    <div class="text-muted small d-flex align-items-center flex-wrap">${label}${badge}</div>
+    <div class="fw-semibold ${fail ? "text-danger" : ""}">${shown} <span class="small text-muted">${unit || ""}</span></div>
+    ${hintHtml}
+  </div></div>`;
 }
 
 async function handleAlert(id) {
@@ -1334,6 +1502,103 @@ async function loadAudit() {
     `).join("") || '<tr><td colspan="4">無資料</td></tr>';
   } catch (e) {
     document.getElementById("auditBody").innerHTML = `<tr><td colspan="4">${e.message}</td></tr>`;
+  }
+}
+
+async function loadIssueCount() {
+  if (!isAdmin()) return;
+  try {
+    const data = await api("/api/admin/issues?status=open&page_size=1");
+    const n = data.total || 0;
+    const badge = document.getElementById("issueBadge");
+    if (badge) {
+      badge.style.display = n > 0 ? "" : "none";
+      badge.textContent = n > 99 ? "99+" : String(n);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+async function loadIssues() {
+  const box = document.getElementById("issuesList");
+  const sum = document.getElementById("selfHealSummary");
+  if (!box) return;
+  box.innerHTML = '<div class="text-muted">載入中...</div>';
+  try {
+    // 狀態 + 必要時自動每日健檢
+    const st = await api("/api/admin/self-heal/status");
+    if (sum) {
+      const last = st.last || {};
+      const counts = last.counts || {};
+      let html = `上次健檢：<strong>${last.ran_at || "尚未執行"}</strong>`;
+      if (st.auto_ran_now) html += `　<span class="text-success">（剛剛已自動執行每日健檢）</span>`;
+      html += `<br>自動排除項目：${counts.auto_fixed_n ?? "-"}　待處理：<strong class="text-danger">${st.open_issues ?? 0}</strong>`;
+      if (counts.duplicates_deleted) html += `　重複已刪：${counts.duplicates_deleted}`;
+      if (counts.bmi_fixed) html += `　BMI 補算：${counts.bmi_fixed}`;
+      if (counts.stage_fixed) html += `　分期重算：${counts.stage_fixed}`;
+      sum.innerHTML = html;
+    }
+    const status = document.getElementById("issueStatus")?.value || "open";
+    const data = await api(`/api/admin/issues?status=${encodeURIComponent(status)}&page_size=100`);
+    loadIssueCount();
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="alert alert-success mb-0">目前沒有此狀態的問題。</div>';
+      return;
+    }
+    box.innerHTML = data.items.map((it) => {
+      const sev = it.severity === "error" ? "danger" : it.severity === "info" ? "info" : "warning";
+      const actions = it.status === "open"
+        ? `<div class="d-flex gap-2 mt-2">
+            <button class="btn btn-sm btn-success" onclick="resolveIssue(${it.id},'fixed')">標記已排除</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="resolveIssue(${it.id},'ignored')">忽略</button>
+          </div>`
+        : `<div class="small text-muted mt-1">狀態：${it.status}${it.resolved_by ? " · by " + it.resolved_by : ""}${it.resolve_note ? " · " + it.resolve_note : ""}</div>`;
+      return `<div class="card border-${sev}">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between gap-2 flex-wrap">
+            <div>
+              <span class="badge bg-${sev} me-1">${it.severity || "warning"}</span>
+              <span class="badge bg-light text-dark border me-1">${it.issue_type || ""}</span>
+              <strong>${it.title || ""}</strong>
+              <div class="small text-muted">${it.created_at ? it.created_at.replace("T", " ").slice(0, 19) : ""}${it.related_id ? " · 關聯 " + it.related_id : ""}</div>
+            </div>
+            ${it.auto_fixed ? '<span class="badge bg-success align-self-start">已自動排除</span>' : ""}
+          </div>
+          ${it.detail ? `<div class="small mt-1" style="white-space:pre-wrap">${it.detail}</div>` : ""}
+          ${actions}
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
+
+async function runSelfHealNow() {
+  const sum = document.getElementById("selfHealSummary");
+  if (sum) sum.innerHTML = "健檢執行中…";
+  try {
+    const result = await api("/api/admin/self-heal", { method: "POST", body: "{}" });
+    await loadIssues();
+    if (sum && result) {
+      const c = result.counts || {};
+      sum.innerHTML = `手動健檢完成（${result.ran_at || ""}）。自動排除 ${c.auto_fixed_n ?? 0} 類，待處理 ${c.open_issues ?? 0} 筆。`;
+    }
+  } catch (e) {
+    if (sum) sum.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function resolveIssue(id, action) {
+  const note = action === "ignored" ? (prompt("忽略原因（可留空）：", "") ?? null) : (prompt("處理說明（可留空）：", "已確認排除") ?? null);
+  if (note === null) return;
+  try {
+    await api(`/api/admin/issues/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action, note }),
+    });
+    loadIssues();
+  } catch (e) {
+    alert(e.message);
   }
 }
 
