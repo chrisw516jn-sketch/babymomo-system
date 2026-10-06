@@ -5,7 +5,7 @@ let currentPage = 1;
 let currentCaseId = null;
 let dupPage = 1;
 const PAGE_SIZE = 30;
-const VIEWS = ["dashboard", "cases", "records", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
+const VIEWS = ["dashboard", "cases", "records", "duplicates", "trash", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
 
 async function api(path, options = {}) {
   const headers = options.headers || {};
@@ -453,6 +453,7 @@ async function loadRecords() {
         <td>${r.body_fat != null ? r.body_fat + "%" : "-"}</td>
         <td>${stageBadge(r.sarcopenia_stage)}</td>
         <td>${r.abnormal_count || 0}</td>
+        <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); trashRecord(${r.id})">丟垃圾桶</button></td>
       `;
       tbody.appendChild(tr);
     });
@@ -461,6 +462,76 @@ async function loadRecords() {
   } catch (e) {
     alert(e.message);
   }
+}
+
+
+
+async function trashCurrentCase() {
+  const id = window._latestRecordId;
+  if (!id) { alert("找不到這筆檢測編號"); return; }
+  if (!confirm("確定刪除這筆檢測？刪除後可在垃圾桶還原；若垃圾桶尚未更新，則會直接刪除。")) return;
+  try {
+    await api(`/api/measurements/${id}`, { method: "DELETE" });
+    closeCase();
+    if (typeof loadRecords === "function") loadRecords();
+    alert("已刪除");
+  } catch (e) { alert("刪除失敗：" + e.message); }
+}
+
+async function trashRecord(id) {
+  if (!confirm("這筆會移到垃圾桶，還可以還原。確定嗎？")) return;
+  try {
+    await api(`/api/measurements/${id}`, { method: "DELETE" });
+    loadRecords();
+    loadTrash();
+  } catch (e) { alert(e.message); }
+}
+
+async function loadTrash() {
+  const qEl = document.getElementById("trashQ");
+  const q = qEl ? qEl.value.trim() : "";
+  let url = "/api/trash?page=1&page_size=100";
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("trashBody");
+    if (!tbody) return;
+    tbody.innerHTML = (data.items || []).map((r) => `
+      <tr>
+        <td>${r.id_card}</td>
+        <td>${r.user_name}</td>
+        <td>${r.measure_time || "-"}</td>
+        <td>${r.grip_strength != null ? r.grip_strength : "-"}</td>
+        <td>${r.deleted_by || "-"}</td>
+        <td class="text-nowrap">
+          <button class="btn btn-sm btn-outline-success" onclick="restoreTrash(${r.id})">還原</button>
+          <button class="btn btn-sm btn-outline-danger" onclick="purgeTrash(${r.id})">永久刪除</button>
+        </td>
+      </tr>`).join("") || `<tr><td colspan="6" class="text-muted">垃圾桶是空的</td></tr>`;
+    const totalEl = document.getElementById("trashTotal");
+    if (totalEl) totalEl.textContent = `共 ${data.total || 0} 筆`;
+    const badge = document.getElementById("trashBadge");
+    if (badge) {
+      badge.textContent = data.total || 0;
+      badge.style.display = data.total ? "inline" : "none";
+    }
+  } catch (e) { alert(e.message); }
+}
+
+async function restoreTrash(id) {
+  try {
+    await api(`/api/trash/${id}/restore`, { method: "POST" });
+    loadTrash();
+    loadRecords();
+  } catch (e) { alert(e.message); }
+}
+
+async function purgeTrash(id) {
+  if (!confirm("永久刪除後無法恢復。確定嗎？")) return;
+  try {
+    await api(`/api/trash/${id}`, { method: "DELETE" });
+    loadTrash();
+  } catch (e) { alert(e.message); }
 }
 
 function changePage(delta) {
@@ -529,6 +600,16 @@ async function openCase(idCard) {
     if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
     const tag = document.getElementById("caseChartTag");
     if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
+    window._latestRecordId = latest.id;
+    const closeBtn = document.querySelector("#casePanel button[onclick*='closeCase']");
+    if (closeBtn && !document.getElementById("btnTrashCase")) {
+      const b = document.createElement("button");
+      b.id = "btnTrashCase";
+      b.className = "btn btn-sm btn-danger";
+      b.textContent = "刪除此筆";
+      b.onclick = () => trashCurrentCase();
+      closeBtn.parentNode.insertBefore(b, closeBtn);
+    }
     document.getElementById("btnPrintReport").onclick = () => {
       openCaseReport(true);
     };
