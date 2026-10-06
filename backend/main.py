@@ -320,7 +320,7 @@ def add_audit(db: Session, operator: str, action: str, details: str = ""):
     db.commit()
 
 
-def create_abnormal_alert(db: Session, rec: Measurement):
+def create_abnormal_alert(db: Session, rec: Measurement, notify: bool = True):
     if not rec:
         return None
     stage = rec.sarcopenia_stage or "正常"
@@ -357,10 +357,11 @@ def create_abnormal_alert(db: Session, rec: Measurement):
     db.add(alert)
     db.commit()
     db.refresh(alert)
-    try:
-        send_line_text(message)
-    except Exception:
-        pass
+    if notify:
+        try:
+            send_line_text(message)
+        except Exception:
+            pass
     return alert
 
 
@@ -1178,7 +1179,7 @@ async def import_file(
             )
             db.add(rec)
             db.flush()
-            create_abnormal_alert(db, rec)
+            create_abnormal_alert(db, rec, notify=False)
             success += 1
         except Exception as e:
             failed += 1
