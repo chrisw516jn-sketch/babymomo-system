@@ -103,6 +103,10 @@
         <a class="nav-link" href="#" data-view="records" onclick="showView('records'); return false;">
           <i class="bi bi-table me-2"></i>檢測紀錄
         </a>
+        <a class="nav-link" href="#" data-view="trash" onclick="showView('trash'); loadTrash(); return false;">
+          <i class="bi bi-trash me-2"></i>垃圾桶
+          <span id="trashBadge" class="badge bg-secondary ms-1" style="display:none">0</span>
+        </a>
         <a class="nav-link" href="#" data-view="duplicates" onclick="showView('duplicates'); loadDuplicates(); return false;">
           <i class="bi bi-files me-2"></i>重複資料
           <span id="dupBadge" class="badge bg-secondary ms-1" style="display:none">0</span>
@@ -296,6 +300,24 @@
       </div>
 
       <!-- Duplicates -->
+      <div id="view-trash" style="display:none">
+        <div class="alert alert-warning small">刪除的檢測會先放在這裡，可以還原。永久刪除後無法恢復。</div>
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <input type="text" id="trashQ" class="form-control form-control-sm" style="max-width:200px" placeholder="身分證 / 姓名" />
+          <button class="btn btn-primary btn-sm" onclick="loadTrash()">查詢</button>
+        </div>
+        <div class="card">
+          <div class="table-responsive">
+            <table class="table table-hover table-sm mb-0">
+              <thead class="table-light">
+                <tr><th>身分證</th><th>姓名</th><th>檢測時間</th><th>握力</th><th>刪除者</th><th></th></tr>
+              </thead>
+              <tbody id="trashBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="small text-muted mt-2" id="trashTotal"></div>
+      </div>
       <div id="view-duplicates" style="display:none">
         <div class="alert alert-info small">同一人身分證、同一天若有多筆，檢測紀錄只顯示時間最新的一筆。較舊的資料不會刪除，可在此查詢。</div>
         <div class="d-flex flex-wrap gap-2 mb-3">

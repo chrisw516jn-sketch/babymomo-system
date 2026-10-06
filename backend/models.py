@@ -44,6 +44,9 @@ class Measurement(Base):
     source = Column(String(30), default="manual")
     created_by = Column(String(50))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_deleted = Column(Boolean, default=False, index=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_by = Column(String(50), nullable=True)
 
     __table_args__ = (
         Index("ix_idcard_measuretime", "id_card", "measure_time", unique=True),
