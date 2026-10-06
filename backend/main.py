@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, desc
+from sqlalchemy import func, or_, desc, text
 from typing import List, Optional
 from datetime import timedelta, datetime, timezone
 import io
@@ -200,6 +200,17 @@ def _alert_item_dict(db: Session, a: Alert) -> dict:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    try:
+        with engine.begin() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(measurements)"))]
+            if "is_deleted" not in cols:
+                conn.execute(text("ALTER TABLE measurements ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
+            if "deleted_at" not in cols:
+                conn.execute(text("ALTER TABLE measurements ADD COLUMN deleted_at DATETIME"))
+            if "deleted_by" not in cols:
+                conn.execute(text("ALTER TABLE measurements ADD COLUMN deleted_by VARCHAR(50)"))
+    except Exception:
+        pass
     db = next(get_db())
     try:
         keep = {"bonnie", "chrisavicii", "littlethanks", "Netown", "netown", "nurse1", "care1"}
@@ -693,11 +704,15 @@ async def netown_endpoint(request: Request, db: Session = Depends(get_db)):
     return handle_netown_upload(body, db, request.headers)
 
 
+def _not_deleted():
+    return or_(Measurement.is_deleted == False, Measurement.is_deleted.is_(None))
+
+
 def _same_day_latest_ids(db: Session) -> set:
-    """同一身分證同一天只保留時間最新的一筆。"""
+    """同一身分證同一天只保留時間最新的一筆（不含垃圾桶）。"""
     rows = db.query(
         Measurement.id, Measurement.id_card, Measurement.measure_date, Measurement.measure_time
-    ).all()
+    ).filter(_not_deleted()).all()
     latest = {}
     for rid, card, day, mt in rows:
         key = (str(card or "").strip().upper(), str(day or ""))
@@ -721,7 +736,7 @@ def list_measurements(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement)
+    query = db.query(Measurement).filter(_not_deleted())
     if q:
         like = f"%{q}%"
         query = query.filter(or_(
@@ -770,7 +785,7 @@ def list_duplicates(
 ):
     """同一天被較新資料取代的舊筆，可在重複專區查詢。"""
     keep = _same_day_latest_ids(db)
-    query = db.query(Measurement)
+    query = db.query(Measurement).filter(_not_deleted())
     if keep:
         query = query.filter(~Measurement.id.in_(keep))
     if q:
@@ -812,12 +827,89 @@ def delete_measurement(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
 ):
+    """移到垃圾桶，不立刻消滅。"""
     rec = db.query(Measurement).get(record_id)
     if not rec:
         raise HTTPException(404, "找不到紀錄")
+    rec.is_deleted = True
+    rec.deleted_at = datetime.now(timezone.utc)
+    rec.deleted_by = current_user.username
+    db.query(Alert).filter(Alert.measurement_id == rec.id, Alert.is_handled == False).update(
+        {"is_handled": True, "handle_note": "紀錄已移入垃圾桶"}, synchronize_session=False
+    )
+    db.commit()
+    add_audit(db, current_user.username, "trash_measurement", f"id={record_id} {rec.user_name}")
+    return {"ok": True, "trashed": True}
+
+
+@app.get("/api/trash", tags=["Trash"])
+def list_trash(
+    q: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(Measurement).filter(Measurement.is_deleted == True)
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(Measurement.id_card.ilike(like), Measurement.user_name.ilike(like)))
+    total = query.count()
+    items = query.order_by(Measurement.deleted_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return {
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [
+            {
+                "id": i.id,
+                "id_card": i.id_card,
+                "user_name": i.user_name,
+                "measure_time": i.measure_time,
+                "grip_strength": i.grip_strength,
+                "chair_stand_time": i.chair_stand_time,
+                "walking_time": i.walking_time,
+                "smi": i.smi,
+                "sarcopenia_stage": i.sarcopenia_stage,
+                "deleted_by": i.deleted_by,
+                "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
+                "source": i.source,
+            }
+            for i in items
+        ],
+    }
+
+
+@app.post("/api/trash/{record_id}/restore", tags=["Trash"])
+def restore_trash(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
+):
+    rec = db.query(Measurement).get(record_id)
+    if not rec or not rec.is_deleted:
+        raise HTTPException(404, "垃圾桶找不到這筆")
+    rec.is_deleted = False
+    rec.deleted_at = None
+    rec.deleted_by = None
+    db.commit()
+    add_audit(db, current_user.username, "restore_measurement", f"id={record_id} {rec.user_name}")
+    return {"ok": True}
+
+
+@app.delete("/api/trash/{record_id}", tags=["Trash"])
+def purge_trash(
+    record_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
+):
+    rec = db.query(Measurement).get(record_id)
+    if not rec or not rec.is_deleted:
+        raise HTTPException(404, "垃圾桶找不到這筆")
+    name = rec.user_name
     db.delete(rec)
     db.commit()
-    add_audit(db, current_user.username, "delete_measurement", f"id={record_id}")
+    add_audit(db, current_user.username, "purge_measurement", f"id={record_id} {name}")
     return {"ok": True}
 
 
@@ -1125,7 +1217,7 @@ def get_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement)
+    query = db.query(Measurement).filter(_not_deleted())
     if start_date:
         query = query.filter(Measurement.measure_date >= start_date)
     if end_date:
@@ -1205,7 +1297,7 @@ def period_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement)
+    query = db.query(Measurement).filter(_not_deleted())
     if start_date:
         query = query.filter(Measurement.measure_date >= start_date)
     if end_date:
