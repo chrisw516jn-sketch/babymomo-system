@@ -4,7 +4,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, desc, text
+from sqlalchemy import func, or_, desc
 from typing import List, Optional
 from datetime import timedelta, datetime, timezone
 import io
@@ -34,6 +34,10 @@ try:
     from models import SystemIssue
 except Exception:
     SystemIssue = None
+try:
+    from models import ExerciseLog
+except Exception:
+    ExerciseLog = None
 from schemas import (
     UserCreate, UserUpdate, UserOut, Token, MeasurementCreate, MeasurementOut,
     StatsOut, ImportResult, CareNoteCreate, CareNoteOut, ThresholdsOut,
@@ -200,17 +204,6 @@ def _alert_item_dict(db: Session, a: Alert) -> dict:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-    try:
-        with engine.begin() as conn:
-            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(measurements)"))]
-            if "is_deleted" not in cols:
-                conn.execute(text("ALTER TABLE measurements ADD COLUMN is_deleted BOOLEAN DEFAULT 0"))
-            if "deleted_at" not in cols:
-                conn.execute(text("ALTER TABLE measurements ADD COLUMN deleted_at DATETIME"))
-            if "deleted_by" not in cols:
-                conn.execute(text("ALTER TABLE measurements ADD COLUMN deleted_by VARCHAR(50)"))
-    except Exception:
-        pass
     db = next(get_db())
     try:
         keep = {"bonnie", "chrisavicii", "littlethanks", "Netown", "netown", "nurse1", "care1"}
@@ -285,34 +278,73 @@ def _fp_key(id_card, measure_time, grip, chair, walk, smi, systolic=None):
 
 
 def purge_duplicate_measurements(db: Session) -> tuple:
+    """
+    刪除重複檢測：
+    1) 同一身分證 + 完全相同檢測時間 → 只留一筆（較早 id）
+    2) 同一身分證 + 同一天 + 數值指紋相同 → 只留一筆
+    3) 同一身分證 + 同一天（多筆）→ 只留檢測時間最新的一筆
+       （與列表「隱藏同日舊筆」規則一致，會真正從資料庫刪除）
+    """
     rows = db.query(Measurement).order_by(Measurement.id.asc()).all()
     seen_time = {}
     seen_fp = {}
-    to_delete = []
+    by_day = {}  # (id_card, date) -> list of rec
+    to_delete_ids = set()
+    id_to_rec = {}
+
     for rec in rows:
-        tkey = (_norm_id(rec.id_card), rec.measure_time or "")
-        fkey = _fp_key(
-            rec.id_card, rec.measure_time, rec.grip_strength,
-            rec.chair_stand_time, rec.walking_time, rec.smi, rec.systolic,
+        id_to_rec[rec.id] = rec
+        card = _norm_id(rec.id_card)
+        day = str(rec.measure_date or "")[:10] or str(rec.measure_time or "")[:10]
+        tkey = (card, rec.measure_time or "")
+        # 指紋改為「同一天」為單位，不綁死到秒，避免重匯入只差幾秒就刪不掉
+        fkey = (
+            card,
+            day,
+            _fp_key(
+                rec.id_card, day,  # 用日期代替精確時間
+                rec.grip_strength, rec.chair_stand_time, rec.walking_time,
+                rec.smi, rec.systolic,
+            )[2:],
         )
-        dup = False
+
         if tkey in seen_time:
-            dup = True
+            to_delete_ids.add(rec.id)
         else:
             seen_time[tkey] = rec.id
+
         if fkey in seen_fp:
-            dup = True
+            to_delete_ids.add(rec.id)
         else:
             seen_fp[fkey] = rec.id
-        if dup:
-            to_delete.append(rec)
+
+        by_day.setdefault((card, day), []).append(rec)
+
+    # 同一人同一天：只留 measure_time 最新者
+    for key, group in by_day.items():
+        if len(group) <= 1:
+            continue
+        group_sorted = sorted(
+            group,
+            key=lambda r: (str(r.measure_time or ""), r.id or 0),
+            reverse=True,
+        )
+        keep_id = group_sorted[0].id
+        for r in group_sorted[1:]:
+            to_delete_ids.add(r.id)
+        # 確保最新那筆不會被前面規則誤刪
+        to_delete_ids.discard(keep_id)
+
     names = []
-    for rec in to_delete:
+    for rid in sorted(to_delete_ids):
+        rec = id_to_rec.get(rid)
+        if not rec:
+            continue
         names.append(f"{rec.user_name}/{rec.id_card} @ {rec.measure_time}")
         db.delete(rec)
-    if to_delete:
+    if to_delete_ids:
         db.commit()
-    return len(to_delete), names[:40]
+    return len(to_delete_ids), names[:40]
 
 
 def add_audit(db: Session, operator: str, action: str, details: str = ""):
@@ -320,7 +352,12 @@ def add_audit(db: Session, operator: str, action: str, details: str = ""):
     db.commit()
 
 
-def create_abnormal_alert(db: Session, rec: Measurement, notify: bool = True):
+def create_abnormal_alert(db: Session, rec: Measurement):
+    """
+    建立或更新異常通報。
+    Netown 常分次上傳（血壓→握力→體脂），每次都新建會變成同一人多則通報；
+    改為：同一身分證 + 尚未關懷 → 優先更新同一則，避免洗版。
+    """
     if not rec:
         return None
     stage = rec.sarcopenia_stage or "正常"
@@ -342,27 +379,152 @@ def create_abnormal_alert(db: Session, rec: Measurement, notify: bool = True):
         advice = "建議：持續觀察，下次檢測時比對趨勢。"
 
     message = format_alert_message(rec) + "\n" + advice
+    day = str(rec.measure_date or "")[:10] or str(rec.measure_time or "")[:10]
+    severity_rank = {"info": 1, "warning": 2, "critical": 3}
 
-    alert = Alert(
-        measurement_id=rec.id,
-        id_card=rec.id_card,
-        user_name=rec.user_name,
-        severity=severity,
-        title=title,
-        message=message,
-        sarcopenia_stage=stage,
-        abnormal_count=abn,
-        target_roles="nurse,caregiver,superadmin,admin",
-    )
-    db.add(alert)
-    db.commit()
-    db.refresh(alert)
-    if notify:
+    # 同一人未關懷通報：同 measurement 或同日 → 更新
+    existing = None
+    try:
+        candidates = (
+            db.query(Alert)
+            .filter(Alert.id_card == rec.id_card, Alert.is_handled == False)  # noqa: E712
+            .order_by(Alert.id.desc())
+            .limit(30)
+            .all()
+        )
+        for a in candidates:
+            if a.measurement_id == rec.id:
+                existing = a
+                break
+        if existing is None:
+            for a in candidates:
+                if day and day in (a.message or ""):
+                    existing = a
+                    break
+        if existing is None and candidates:
+            # 同人短時間內未關懷：合併到最新一則
+            existing = candidates[0]
+    except Exception:
+        existing = None
+
+    should_line = True
+    if existing:
+        old_rank = severity_rank.get(existing.severity or "", 0)
+        new_rank = severity_rank.get(severity, 0)
+        should_line = new_rank > old_rank
+        existing.measurement_id = rec.id
+        existing.user_name = rec.user_name
+        if new_rank >= old_rank:
+            existing.severity = severity
+            existing.title = title
+        existing.message = message
+        existing.sarcopenia_stage = stage
+        existing.abnormal_count = abn
+        existing.is_read = False
+        db.commit()
+        db.refresh(existing)
+        alert = existing
+        try:
+            for ex in candidates:
+                if ex.id == existing.id:
+                    continue
+                if ex.measurement_id == rec.id or (day and day in (ex.message or "")):
+                    ex.is_handled = True
+                    ex.handled_by = "system"
+                    ex.handle_note = "同日合併通報，已自動結案"
+            db.commit()
+        except Exception:
+            pass
+    else:
+        alert = Alert(
+            measurement_id=rec.id,
+            id_card=rec.id_card,
+            user_name=rec.user_name,
+            severity=severity,
+            title=title,
+            message=message,
+            sarcopenia_stage=stage,
+            abnormal_count=abn,
+            target_roles="nurse,caregiver,superadmin,admin",
+        )
+        db.add(alert)
+        db.commit()
+        db.refresh(alert)
+
+    if should_line:
         try:
             send_line_text(message)
         except Exception:
             pass
     return alert
+
+
+# ========== 防暴力破解（登入限速）==========
+# 同一帳號或同一 IP 短時間內多次失敗會暫時鎖定
+_login_fail_store: dict = {}  # key -> {"fails": int, "first": ts, "lock_until": ts}
+_LOGIN_MAX_FAILS = 5          # 允許失敗次數
+_LOGIN_WINDOW_SEC = 15 * 60   # 統計視窗 15 分鐘
+_LOGIN_LOCK_SEC = 15 * 60     # 鎖定 15 分鐘
+_LOGIN_IP_MAX = 30            # 同一 IP 15 分鐘內最多嘗試次數（含成功前的失敗）
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    real = request.headers.get("x-real-ip") or request.headers.get("X-Real-IP")
+    if real:
+        return real.strip()[:64]
+    if request.client:
+        return (request.client.host or "unknown")[:64]
+    return "unknown"
+
+
+def _login_guard_check(username: str, ip: str) -> Optional[str]:
+    """若應封鎖則回傳錯誤訊息，否則 None。"""
+    now = datetime.now().timestamp()
+    # 清掉過期資料
+    dead = [k for k, v in _login_fail_store.items() if v.get("lock_until", 0) < now and now - v.get("first", 0) > _LOGIN_WINDOW_SEC]
+    for k in dead:
+        _login_fail_store.pop(k, None)
+
+    for key in (f"user:{username.lower()}", f"ip:{ip}"):
+        rec = _login_fail_store.get(key)
+        if not rec:
+            continue
+        lock_until = rec.get("lock_until") or 0
+        if lock_until > now:
+            remain = int(lock_until - now)
+            mins = max(1, (remain + 59) // 60)
+            return f"嘗試次數過多，請約 {mins} 分鐘後再試"
+        # 視窗外則重置
+        if now - rec.get("first", 0) > _LOGIN_WINDOW_SEC:
+            _login_fail_store.pop(key, None)
+    return None
+
+
+def _login_guard_fail(username: str, ip: str):
+    now = datetime.now().timestamp()
+    for key, limit in ((f"user:{username.lower()}", _LOGIN_MAX_FAILS), (f"ip:{ip}", _LOGIN_IP_MAX)):
+        rec = _login_fail_store.get(key)
+        if not rec or now - rec.get("first", 0) > _LOGIN_WINDOW_SEC:
+            rec = {"fails": 0, "first": now, "lock_until": 0}
+        rec["fails"] = int(rec.get("fails", 0)) + 1
+        if rec["fails"] >= limit:
+            rec["lock_until"] = now + _LOGIN_LOCK_SEC
+        _login_fail_store[key] = rec
+
+
+def _login_guard_success(username: str, ip: str):
+    _login_fail_store.pop(f"user:{username.lower()}", None)
+    # IP 不完全清掉，避免換帳號狂試；只在成功時略減
+    rec = _login_fail_store.get(f"ip:{ip}")
+    if rec:
+        rec["fails"] = max(0, int(rec.get("fails", 0)) - 2)
+        if rec["fails"] == 0:
+            _login_fail_store.pop(f"ip:{ip}", None)
+        else:
+            _login_fail_store[f"ip:{ip}"] = rec
 
 
 # ========== Auth ==========
@@ -372,19 +534,33 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/api/auth/login", response_model=Token, tags=["Auth"])
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
     username = (form_data.username or "").strip()
     password = (form_data.password or "").strip()
+    ip = _client_ip(request)
+
+    blocked = _login_guard_check(username or "?", ip)
+    if blocked:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, blocked)
+
     user = get_user_by_username(db, username)
     if not user or not verify_password(password, user.hashed_password):
+        _login_guard_fail(username or "?", ip)
+        # 故意不區分「帳號不存在／密碼錯」，避免被枚舉帳號
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "帳號或密碼錯誤")
     if not user.is_active:
         raise HTTPException(403, "帳號已停用")
+
+    _login_guard_success(user.username, ip)
     token = create_access_token(
         data={"sub": user.username},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    add_audit(db, user.username, "login", "登入成功")
+    add_audit(db, user.username, "login", f"登入成功 ip={ip}")
     return Token(access_token=token, user=UserOut.model_validate(user))
 
 
@@ -521,7 +697,49 @@ def handle_netown_upload(body: dict, db: Session, headers: dict) -> JSONResponse
     machine = parsed.get("machine_number") or ""
 
     try:
-        # 同日合併：找同一身分證當日最新一筆，沒有就新建
+        # ----- 運動輔具：寫入 exercise_logs，不占用檢測紀錄 -----
+        if not parsed.get("is_vital") and typ in (
+            "ResistanceExercise", "AerobicExercise", "GripTraining"
+        ):
+            if ExerciseLog is None:
+                return _netown_msg("500", 500)
+            prev = (
+                db.query(Measurement)
+                .filter(Measurement.id_card == id_card)
+                .order_by(Measurement.measure_time.desc())
+                .first()
+            )
+            ex = parsed.get("exercise") or {}
+            log = ExerciseLog(
+                id_card=id_card,
+                user_name=(prev.user_name if prev else id_card),
+                gender=(prev.gender if prev and prev.gender else None),
+                exercise_type=typ,
+                machine_code=ex.get("machine_code"),
+                machine_name=ex.get("machine_name"),
+                duration_sec=ex.get("duration_sec"),
+                reps=ex.get("reps"),
+                calories=ex.get("calories"),
+                distance_km=ex.get("distance_km"),
+                achievement_rate=ex.get("achievement_rate"),
+                extra=ex.get("extra"),
+                summary=(parsed.get("exercise_summary") or "")[:500],
+                measure_date=measure_date,
+                measure_time=measure_time,
+                machine_number=machine,
+                source="netown",
+            )
+            db.add(log)
+            db.commit()
+            add_audit(
+                db,
+                f"netown:{machine}"[:50],
+                "netown_exercise",
+                f"{id_card} type={typ} time={measure_time}",
+            )
+            return _netown_msg("200", 200)
+
+        # ----- 體適能量測：同日合併寫入 measurements -----
         rec = (
             db.query(Measurement)
             .filter(Measurement.id_card == id_card, Measurement.measure_date == measure_date)
@@ -548,7 +766,6 @@ def handle_netown_upload(body: dict, db: Session, headers: dict) -> JSONResponse
             db.add(rec)
             db.flush()
         else:
-            # 更新為較新的量測時間
             if measure_time > (rec.measure_time or ""):
                 rec.measure_time = measure_time
 
@@ -556,18 +773,13 @@ def handle_netown_upload(body: dict, db: Session, headers: dict) -> JSONResponse
             _apply_netown_fields(rec, parsed["fields"])
             _recalc_measurement(db, rec)
 
-        # 運動摘要附加到 status（不覆蓋分期說明主體）
         summary = parsed.get("exercise_summary") or ""
-        if summary:
+        if summary and parsed.get("is_vital"):
             extra = f"[Netown/{typ}] {summary}"
             if rec.status and extra not in (rec.status or ""):
                 rec.status = ((rec.status or "") + " | " + extra)[:500]
             elif not rec.status:
                 rec.status = extra[:500]
-            if not parsed.get("is_vital"):
-                # 純運動紀錄仍確保有分期欄位
-                if not rec.sarcopenia_stage:
-                    _recalc_measurement(db, rec)
 
         db.commit()
         db.refresh(rec)
@@ -705,15 +917,11 @@ async def netown_endpoint(request: Request, db: Session = Depends(get_db)):
     return handle_netown_upload(body, db, request.headers)
 
 
-def _not_deleted():
-    return or_(Measurement.is_deleted == False, Measurement.is_deleted.is_(None))
-
-
 def _same_day_latest_ids(db: Session) -> set:
-    """同一身分證同一天只保留時間最新的一筆（不含垃圾桶）。"""
+    """同一身分證同一天只保留時間最新的一筆。"""
     rows = db.query(
         Measurement.id, Measurement.id_card, Measurement.measure_date, Measurement.measure_time
-    ).filter(_not_deleted()).all()
+    ).all()
     latest = {}
     for rid, card, day, mt in rows:
         key = (str(card or "").strip().upper(), str(day or ""))
@@ -737,7 +945,7 @@ def list_measurements(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement).filter(_not_deleted())
+    query = db.query(Measurement)
     if q:
         like = f"%{q}%"
         query = query.filter(or_(
@@ -786,7 +994,7 @@ def list_duplicates(
 ):
     """同一天被較新資料取代的舊筆，可在重複專區查詢。"""
     keep = _same_day_latest_ids(db)
-    query = db.query(Measurement).filter(_not_deleted())
+    query = db.query(Measurement)
     if keep:
         query = query.filter(~Measurement.id.in_(keep))
     if q:
@@ -828,90 +1036,154 @@ def delete_measurement(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
 ):
-    """移到垃圾桶，不立刻消滅。"""
     rec = db.query(Measurement).get(record_id)
     if not rec:
         raise HTTPException(404, "找不到紀錄")
-    rec.is_deleted = True
-    rec.deleted_at = datetime.now(timezone.utc)
-    rec.deleted_by = current_user.username
-    db.query(Alert).filter(Alert.measurement_id == rec.id, Alert.is_handled == False).update(
-        {"is_handled": True, "handle_note": "紀錄已移入垃圾桶"}, synchronize_session=False
-    )
+    db.delete(rec)
     db.commit()
-    add_audit(db, current_user.username, "trash_measurement", f"id={record_id} {rec.user_name}")
-    return {"ok": True, "trashed": True}
+    add_audit(db, current_user.username, "delete_measurement", f"id={record_id}")
+    return {"ok": True}
 
 
-@app.get("/api/trash", tags=["Trash"])
-def list_trash(
+# ========== 運動輔具紀錄 ==========
+@app.get("/api/exercises", tags=["Exercise"])
+def list_exercises(
     q: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    exercise_type: Optional[str] = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement).filter(Measurement.is_deleted == True)
+    if ExerciseLog is None:
+        return {"total": 0, "page": page, "page_size": page_size, "items": []}
+    query = db.query(ExerciseLog)
     if q:
         like = f"%{q}%"
-        query = query.filter(or_(Measurement.id_card.ilike(like), Measurement.user_name.ilike(like)))
+        query = query.filter(or_(
+            ExerciseLog.id_card.ilike(like),
+            ExerciseLog.user_name.ilike(like),
+            ExerciseLog.machine_name.ilike(like),
+            ExerciseLog.summary.ilike(like),
+        ))
+    if start_date:
+        query = query.filter(ExerciseLog.measure_date >= start_date)
+    if end_date:
+        query = query.filter(ExerciseLog.measure_date <= end_date)
+    if exercise_type:
+        query = query.filter(ExerciseLog.exercise_type == exercise_type)
     total = query.count()
-    items = query.order_by(Measurement.deleted_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [
-            {
-                "id": i.id,
-                "id_card": i.id_card,
-                "user_name": i.user_name,
-                "measure_time": i.measure_time,
-                "grip_strength": i.grip_strength,
-                "chair_stand_time": i.chair_stand_time,
-                "walking_time": i.walking_time,
-                "smi": i.smi,
-                "sarcopenia_stage": i.sarcopenia_stage,
-                "deleted_by": i.deleted_by,
-                "deleted_at": i.deleted_at.isoformat() if i.deleted_at else None,
-                "source": i.source,
-            }
-            for i in items
-        ],
-    }
+    items = (
+        query.order_by(ExerciseLog.measure_time.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+    out = []
+    for r in items:
+        out.append({
+            "id": r.id,
+            "id_card": r.id_card,
+            "user_name": r.user_name,
+            "gender": r.gender,
+            "exercise_type": r.exercise_type,
+            "machine_code": r.machine_code,
+            "machine_name": r.machine_name,
+            "duration_sec": r.duration_sec,
+            "reps": r.reps,
+            "calories": r.calories,
+            "distance_km": r.distance_km,
+            "achievement_rate": r.achievement_rate,
+            "summary": r.summary,
+            "measure_date": r.measure_date,
+            "measure_time": r.measure_time,
+            "machine_number": r.machine_number,
+            "source": r.source,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+    return {"total": total, "page": page, "page_size": page_size, "items": out}
 
 
-@app.post("/api/trash/{record_id}/restore", tags=["Trash"])
-def restore_trash(
-    record_id: int,
+@app.delete("/api/exercises/{log_id}", tags=["Exercise"])
+def delete_exercise(
+    log_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
 ):
-    rec = db.query(Measurement).get(record_id)
-    if not rec or not rec.is_deleted:
-        raise HTTPException(404, "垃圾桶找不到這筆")
-    rec.is_deleted = False
-    rec.deleted_at = None
-    rec.deleted_by = None
+    if ExerciseLog is None:
+        raise HTTPException(500, "運動紀錄模組未就緒")
+    row = db.query(ExerciseLog).get(log_id)
+    if not row:
+        raise HTTPException(404, "找不到運動紀錄")
+    db.delete(row)
     db.commit()
-    add_audit(db, current_user.username, "restore_measurement", f"id={record_id} {rec.user_name}")
+    add_audit(db, current_user.username, "delete_exercise", f"id={log_id}")
     return {"ok": True}
 
 
-@app.delete("/api/trash/{record_id}", tags=["Trash"])
-def purge_trash(
-    record_id: int,
+@app.post("/api/exercises/migrate-from-measurements", tags=["Exercise"])
+def migrate_exercise_from_measurements(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
+    current_user: User = Depends(require_roles("admin", "superadmin")),
 ):
-    rec = db.query(Measurement).get(record_id)
-    if not rec or not rec.is_deleted:
-        raise HTTPException(404, "垃圾桶找不到這筆")
-    name = rec.user_name
-    db.delete(rec)
+    """
+    將誤寫入「檢測紀錄」的純運動輔具資料移到運動專區，並自檢測列表移除。
+    判斷：status 含 ResistanceExercise / AerobicExercise / GripTraining，
+    且握力、坐站、走路、SMI、血壓皆空。
+    """
+    if ExerciseLog is None:
+        raise HTTPException(500, "運動紀錄模組未就緒")
+    rows = db.query(Measurement).all()
+    moved = 0
+    for rec in rows:
+        st = rec.status or ""
+        if not any(k in st for k in ("ResistanceExercise", "AerobicExercise", "GripTraining")):
+            continue
+        has_vital = any([
+            rec.grip_strength is not None,
+            rec.chair_stand_time is not None,
+            rec.walking_time is not None,
+            rec.smi is not None,
+            rec.systolic is not None,
+            rec.body_fat is not None,
+        ])
+        if has_vital:
+            continue
+        # 解析類型
+        typ = "ResistanceExercise"
+        if "AerobicExercise" in st:
+            typ = "AerobicExercise"
+        elif "GripTraining" in st:
+            typ = "GripTraining"
+        # 從摘要抽機名
+        machine_name = None
+        for part in st.split("|"):
+            part = part.strip()
+            if "阻力運動" in part or "有氧運動" in part or "握力訓練" in part:
+                machine_name = part.replace("[Netown/ResistanceExercise]", "").replace(
+                    "[Netown/AerobicExercise]", ""
+                ).replace("[Netown/GripTraining]", "").strip()
+                break
+        log = ExerciseLog(
+            id_card=rec.id_card,
+            user_name=rec.user_name,
+            gender=rec.gender,
+            exercise_type=typ,
+            machine_name=(machine_name or typ)[:80],
+            summary=(st[:500] if st else None),
+            measure_date=rec.measure_date,
+            measure_time=rec.measure_time,
+            source=rec.source or "netown",
+            machine_number=(rec.created_by or "").replace("netown:", "")[:50],
+        )
+        db.add(log)
+        db.delete(rec)
+        moved += 1
     db.commit()
-    add_audit(db, current_user.username, "purge_measurement", f"id={record_id} {name}")
-    return {"ok": True}
+    add_audit(db, current_user.username, "migrate_exercise", f"moved={moved}")
+    return {"ok": True, "moved": moved}
 
 
 # ========== Import ==========
@@ -1179,7 +1451,7 @@ async def import_file(
             )
             db.add(rec)
             db.flush()
-            create_abnormal_alert(db, rec, notify=False)
+            create_abnormal_alert(db, rec)
             success += 1
         except Exception as e:
             failed += 1
@@ -1218,7 +1490,7 @@ def get_stats(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement).filter(_not_deleted())
+    query = db.query(Measurement)
     if start_date:
         query = query.filter(Measurement.measure_date >= start_date)
     if end_date:
@@ -1298,7 +1570,7 @@ def period_report(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(Measurement).filter(_not_deleted())
+    query = db.query(Measurement)
     if start_date:
         query = query.filter(Measurement.measure_date >= start_date)
     if end_date:
@@ -2832,8 +3104,8 @@ def health():
     return {"status": "ok", "service": "寶貝機體適能檢測系統", "version": "2.0.0"}
 
 
-# Frontend static
-_base = os.path.dirname(__file__)
+# Frontend static（明確提供 index.html / app.js，避免 mount 造成 404 無法登入）
+_base = os.path.dirname(os.path.abspath(__file__))
 _candidates = [
     _base,
     os.path.join(_base, "frontend"),
@@ -2846,12 +3118,46 @@ for p in _candidates:
         break
 
 
+def _frontend_file(*names: str) -> Optional[str]:
+    if not frontend_path:
+        return None
+    for name in names:
+        path = os.path.join(frontend_path, name)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
 @app.get("/")
 def home_page():
-    if frontend_path:
-        return FileResponse(os.path.join(frontend_path, "index.html"))
-    return {"detail": "Frontend not found. Upload index.html into backend folder."}
+    path = _frontend_file("index.html")
+    if path:
+        return FileResponse(path, media_type="text/html; charset=utf-8")
+    return HTMLResponse(
+        "<h3>Frontend not found</h3><p>請確認 backend 資料夾內有 index.html 與 app.js</p>",
+        status_code=404,
+    )
 
 
+@app.get("/app.js")
+def serve_app_js():
+    path = _frontend_file("app.js")
+    if path:
+        return FileResponse(path, media_type="application/javascript; charset=utf-8")
+    raise HTTPException(404, "app.js not found — 請將 app.js 放到 backend 目錄")
+
+
+@app.get("/index.html")
+def serve_index_html():
+    path = _frontend_file("index.html")
+    if path:
+        return FileResponse(path, media_type="text/html; charset=utf-8")
+    raise HTTPException(404, "index.html not found")
+
+
+# 其他靜態資源（若有 css/圖片）
 if frontend_path:
-    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+    try:
+        app.mount("/static", StaticFiles(directory=frontend_path), name="frontend_static")
+    except Exception:
+        pass

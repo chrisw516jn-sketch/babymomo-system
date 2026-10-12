@@ -205,6 +205,15 @@ def parse_netown(body: dict) -> dict:
     elif typ == "ResistanceExercise":
         code = vals[0] if vals else ""
         name = RESISTANCE_NAMES.get(code, code)
+        result["exercise"] = {
+            "exercise_type": typ,
+            "machine_code": str(code),
+            "machine_name": name,
+            "duration_sec": _f0(vals[1]) if len(vals) > 1 else None,
+            "reps": _f0(vals[2]) if len(vals) > 2 else None,
+            "calories": _f0(vals[3]) if len(vals) > 3 else None,
+            "achievement_rate": _f0(vals[4]) if len(vals) > 4 else None,
+        }
         result["exercise_summary"] = (
             f"阻力運動 {name} 時間{vals[1] if len(vals)>1 else '-'}秒 "
             f"次數{vals[2] if len(vals)>2 else '-'} "
@@ -214,6 +223,18 @@ def parse_netown(body: dict) -> dict:
     elif typ == "AerobicExercise":
         code = vals[0] if vals else ""
         name = AEROBIC_NAMES.get(code, code)
+        result["exercise"] = {
+            "exercise_type": typ,
+            "machine_code": str(code),
+            "machine_name": name,
+            "duration_sec": _f0(vals[1]) if len(vals) > 1 else None,
+            "calories": _f0(vals[2]) if len(vals) > 2 else None,
+            "distance_km": _f0(vals[3]) if len(vals) > 3 else None,
+            "extra": json.dumps(
+                {"watt": vals[4] if len(vals) > 4 else None, "rpm": vals[5] if len(vals) > 5 else None},
+                ensure_ascii=False,
+            ),
+        }
         result["exercise_summary"] = (
             f"有氧運動 {name} 時間{vals[1] if len(vals)>1 else '-'}秒 "
             f"消耗{vals[2] if len(vals)>2 else '-'}kcal "
@@ -221,12 +242,30 @@ def parse_netown(body: dict) -> dict:
             f"瓦特{vals[4] if len(vals)>4 else '-'} 轉速{vals[5] if len(vals)>5 else '-'}"
         )
     elif typ == "GripTraining":
+        side = "右" if len(vals) > 4 and str(vals[4]) == "1" else "左"
+        result["exercise"] = {
+            "exercise_type": typ,
+            "machine_code": "GRIP",
+            "machine_name": f"握力訓練({side})",
+            "duration_sec": _f0(vals[0]) if len(vals) > 0 else None,
+            "reps": _f0(vals[1]) if len(vals) > 1 else None,
+            "achievement_rate": _f0(vals[3]) if len(vals) > 3 else None,
+            "extra": json.dumps(
+                {
+                    "achieved_reps": vals[2] if len(vals) > 2 else None,
+                    "side": side,
+                    "target_kg": vals[5] if len(vals) > 5 else None,
+                    "target_reps": vals[6] if len(vals) > 6 else None,
+                },
+                ensure_ascii=False,
+            ),
+        }
         result["exercise_summary"] = (
             f"握力訓練 時間{vals[0] if vals else '-'}秒 "
             f"施握{vals[1] if len(vals)>1 else '-'}次 "
             f"達成{vals[2] if len(vals)>2 else '-'}次 "
             f"達成率{vals[3] if len(vals)>3 else '-'}% "
-            f"部位{'右' if len(vals)>4 and vals[4]=='1' else '左'} "
+            f"部位{side} "
             f"目標{vals[5] if len(vals)>5 else '-'}kg×{vals[6] if len(vals)>6 else '-'}"
         )
     else:

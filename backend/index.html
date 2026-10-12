@@ -103,9 +103,8 @@
         <a class="nav-link" href="#" data-view="records" onclick="showView('records'); return false;">
           <i class="bi bi-table me-2"></i>檢測紀錄
         </a>
-        <a class="nav-link" href="#" data-view="trash" onclick="showView('trash'); loadTrash(); return false;">
-          <i class="bi bi-trash me-2"></i>垃圾桶
-          <span id="trashBadge" class="badge bg-secondary ms-1" style="display:none">0</span>
+        <a class="nav-link" href="#" data-view="exercises" onclick="showView('exercises'); loadExercises(); return false;">
+          <i class="bi bi-bicycle me-2"></i>運動輔具
         </a>
         <a class="nav-link" href="#" data-view="duplicates" onclick="showView('duplicates'); loadDuplicates(); return false;">
           <i class="bi bi-files me-2"></i>重複資料
@@ -129,6 +128,10 @@
         </a>
         <a class="nav-link admin-only" href="#" data-view="audit" onclick="showView('audit'); return false;">
           <i class="bi bi-journal-text me-2"></i>操作日誌
+        </a>
+        <a class="nav-link admin-only" href="#" data-view="issues" onclick="showView('issues'); return false;">
+          <i class="bi bi-shield-check me-2"></i>系統健檢
+          <span id="issueBadge" class="badge bg-danger ms-1" style="display:none">0</span>
         </a>
         <a class="nav-link" href="#" data-view="api" onclick="showView('api'); return false;">
           <i class="bi bi-code-slash me-2"></i>API 說明
@@ -266,6 +269,26 @@
               <button class="btn btn-xs btn-outline-primary btn-sm ms-2" onclick="fillSuggestedRetest()">帶入關懷下次追蹤日</button>
             </div>
           </div>
+
+          <!-- 個案客製化運動輔具建議 -->
+          <div class="card border-success mt-3 mb-2">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+                <div>
+                  <h6 class="fw-bold mb-1 text-success"><i class="bi bi-bicycle me-1"></i>此個案的運動輔具建議（可客製）</h6>
+                  <div class="small text-muted" id="caseEqSourceHint">預設依量測數據自動產生；管理員可改成此人專用內容。</div>
+                </div>
+                <div class="d-flex gap-2 flex-wrap admin-only">
+                  <button class="btn btn-sm btn-outline-secondary" onclick="addCaseEqRow()">＋ 新增一筆</button>
+                  <button class="btn btn-sm btn-outline-warning" onclick="resetCaseEquipment()">恢復自動</button>
+                  <button class="btn btn-sm btn-success" onclick="saveCaseEquipment()">儲存此人專用建議</button>
+                </div>
+              </div>
+              <div id="caseEqEditor" class="vstack gap-2"></div>
+              <div id="caseEqMsg" class="small mt-2"></div>
+            </div>
+          </div>
+
           <hr />
           <h6 class="fw-bold">關懷追蹤紀錄</h6>
           <div class="d-flex gap-2 mb-2">
@@ -281,7 +304,7 @@
               <thead class="table-light">
                 <tr>
                   <th>身分證</th><th>姓名</th><th>性別/年齡</th><th>檢測時間</th>
-                  <th>握力</th><th>坐站</th><th>走路</th><th>SMI</th>
+                  <th>握力</th><th>坐站</th><th>走路</th><th>骨骼肌量SMI</th><th>體脂率</th>
                   <th>分期</th><th>異常</th>
                 </tr>
               </thead>
@@ -299,25 +322,49 @@
         </div>
       </div>
 
-      <!-- Duplicates -->
-      <div id="view-trash" style="display:none">
-        <div class="alert alert-warning small">刪除的檢測會先放在這裡，可以還原。永久刪除後無法恢復。</div>
-        <div class="d-flex flex-wrap gap-2 mb-3">
-          <input type="text" id="trashQ" class="form-control form-control-sm" style="max-width:200px" placeholder="身分證 / 姓名" />
-          <button class="btn btn-primary btn-sm" onclick="loadTrash()">查詢</button>
+      <!-- 運動輔具 -->
+      <div id="view-exercises" style="display:none">
+        <div class="alert alert-success small mb-3">
+          此區顯示<strong>運動輔具／有氧／握力訓練</strong>紀錄（與寶貝機體適能量測分開）。
+          Netown 阻力機、有氧機、握力訓練上傳會自動進這裡。
+          <button class="btn btn-sm btn-outline-primary ms-2" onclick="migrateExerciseFromMeasurements()">將檢測區誤入的運動資料移過來</button>
         </div>
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <input type="text" id="exQ" class="form-control form-control-sm" style="max-width:180px" placeholder="身分證 / 姓名 / 器材" />
+          <input type="date" id="exStart" class="form-control form-control-sm" style="max-width:140px" />
+          <input type="date" id="exEnd" class="form-control form-control-sm" style="max-width:140px" />
+          <select id="exType" class="form-select form-select-sm" style="max-width:160px">
+            <option value="">全部類型</option>
+            <option value="ResistanceExercise">阻力運動</option>
+            <option value="AerobicExercise">有氧運動</option>
+            <option value="GripTraining">握力訓練</option>
+          </select>
+          <button class="btn btn-primary btn-sm" onclick="exPage=1;loadExercises()">查詢</button>
+        </div>
+        <div id="exMsg" class="mb-2"></div>
         <div class="card">
           <div class="table-responsive">
             <table class="table table-hover table-sm mb-0">
               <thead class="table-light">
-                <tr><th>身分證</th><th>姓名</th><th>檢測時間</th><th>握力</th><th>刪除者</th><th></th></tr>
+                <tr>
+                  <th>時間</th><th>身分證</th><th>姓名</th><th>類型</th><th>器材</th>
+                  <th>時間(秒)</th><th>次數</th><th>消耗kcal</th><th>距離km</th><th>達成率%</th><th>摘要</th><th></th>
+                </tr>
               </thead>
-              <tbody id="trashBody"></tbody>
+              <tbody id="exBody"></tbody>
             </table>
           </div>
         </div>
-        <div class="small text-muted mt-2" id="trashTotal"></div>
+        <div class="d-flex justify-content-between align-items-center mt-2">
+          <span class="small text-muted" id="exPagerInfo"></span>
+          <div>
+            <button class="btn btn-sm btn-outline-secondary" onclick="if(exPage>1){exPage--;loadExercises()}">上一頁</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="exPage++;loadExercises()">下一頁</button>
+          </div>
+        </div>
       </div>
+
+      <!-- Duplicates -->
       <div id="view-duplicates" style="display:none">
         <div class="alert alert-info small">同一人身分證、同一天若有多筆，檢測紀錄只顯示時間最新的一筆。較舊的資料不會刪除，可在此查詢。</div>
         <div class="d-flex flex-wrap gap-2 mb-3">
@@ -445,18 +492,20 @@
         <div class="card p-4 mt-3" style="max-width:900px">
           <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
             <div>
-              <h5 class="fw-bold mb-1"><i class="bi bi-bicycle me-2"></i>真茂科技運動輔具建議（可編輯）</h5>
-              <p class="small text-muted mb-0">管理員可修改名稱、為什麼、怎麼用、注意事項。儲存後異常通報卡片會立即套用。</p>
+              <h5 class="fw-bold mb-1"><i class="bi bi-bicycle me-2"></i>運動輔具「預設範本」（非每人共用）</h5>
+              <p class="small text-muted mb-0">
+                這裡只是<strong>沒有客製時的自動範本</strong>。若要針對某一位個案調整，請到「檢測紀錄 → 點開個案」編輯<strong>此人專用建議</strong>。
+              </p>
             </div>
             <div class="d-flex gap-2">
               <button class="btn btn-sm btn-outline-secondary" onclick="addEquipmentRow()">＋ 新增一筆</button>
               <button class="btn btn-sm btn-outline-warning" onclick="resetEquipment()">還原預設</button>
-              <button class="btn btn-sm btn-primary" onclick="saveEquipment()">儲存輔具建議</button>
+              <button class="btn btn-sm btn-primary" onclick="saveEquipment()">儲存預設範本</button>
             </div>
           </div>
           <div id="equipmentEditor" class="vstack gap-3"></div>
           <div id="equipmentMsg" class="mt-2 small"></div>
-          <p class="small text-muted mt-2 mb-0">觸發條件說明：grip 握力不足、chair 坐站偏慢、walk 走路偏慢、smi 肌肉量低、stage 肌少分期、always_abnormal 有任何異常、always 一律顯示</p>
+          <p class="small text-muted mt-2 mb-0">觸發條件（僅預設範本）：grip / chair / walk / smi / stage / always_abnormal / always。個案客製後會整份覆蓋，不再用觸發條件。</p>
         </div>
 
         <div class="card p-4 mt-3" style="max-width:640px">
@@ -479,6 +528,25 @@
             <tbody id="auditBody"></tbody>
           </table>
         </div></div>
+      </div>
+
+      <!-- System Issues / Self-heal -->
+      <div id="view-issues" style="display:none">
+        <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+          <h5 class="fw-bold mb-0 me-2"><i class="bi bi-shield-check me-1"></i>系統健檢與錯誤排除</h5>
+          <select id="issueStatus" class="form-select form-select-sm" style="max-width:140px" onchange="loadIssues()">
+            <option value="open">待處理</option>
+            <option value="fixed">已排除</option>
+            <option value="ignored">已忽略</option>
+            <option value="all">全部</option>
+          </select>
+          <button class="btn btn-sm btn-primary" onclick="loadIssues()">重新整理</button>
+          <button class="btn btn-sm btn-success" onclick="runSelfHealNow()">立即執行健檢</button>
+        </div>
+        <div class="alert alert-info small" id="selfHealSummary">
+          系統會每日自動偵測：重複資料、缺 BMI、分期不一致等，能自動排除的會先排除；排除不了的會列在下方供管理員處理。
+        </div>
+        <div id="issuesList" class="vstack gap-2"></div>
       </div>
 
       <!-- API -->
