@@ -664,6 +664,94 @@ async function openCase(idCard) {
     }).join("");
 
     
+    
+    // 前後測比較（後測區）
+    let progBox = document.getElementById("caseProgressBox");
+    if (!progBox) {
+      progBox = document.createElement("div");
+      progBox.id = "caseProgressBox";
+      progBox.className = "mt-3 mb-3";
+      const metricsEl = document.getElementById("caseMetrics");
+      if (metricsEl && metricsEl.parentNode) {
+        metricsEl.parentNode.insertBefore(progBox, metricsEl.nextSibling);
+      }
+    }
+    const prog = data.progress;
+    if (prog && prog.available) {
+      const rows = (prog.metrics || []).map((m) => {
+        let badge = '<span class="badge bg-secondary">—</span>';
+        if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
+        else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
+        else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
+        const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
+        return `<tr>
+          <td class="small">${m.label}</td>
+          <td class="small">${m.before != null ? m.before : "-"}</td>
+          <td class="small fw-semibold">${m.after != null ? m.after : "-"}</td>
+          <td class="small">${d}</td>
+          <td>${badge}</td>
+        </tr>`;
+      }).join("");
+      const st = prog.stage || {};
+      let stBadge = '<span class="badge bg-secondary">—</span>';
+      if (st.status === "進步") stBadge = '<span class="badge bg-success">進步</span>';
+      else if (st.status === "退步") stBadge = '<span class="badge bg-danger">退步</span>';
+      else if (st.status === "持平") stBadge = '<span class="badge bg-warning text-dark">持平</span>';
+      const ex = prog.exercise || {};
+      const typeLines = Object.keys(ex.by_type || {}).map((k) => `${k} ${ex.by_type[k]} 次`).join("、") || "無";
+      const exRows = (ex.items || []).slice(-8).reverse().map((it) =>
+        `<tr>
+          <td class="small">${it.date || "-"}</td>
+          <td class="small">${it.machine_name || it.type || "-"}</td>
+          <td class="small">${it.duration_sec != null ? Math.round(it.duration_sec / 60 * 10) / 10 + " 分" : "-"}</td>
+          <td class="small">${it.calories != null ? it.calories : "-"}</td>
+        </tr>`
+      ).join("");
+      progBox.innerHTML = `
+        <div class="card border-primary border-opacity-25 shadow-sm">
+          <div class="card-header bg-primary bg-opacity-10 py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <span class="fw-bold"><i class="bi bi-clipboard2-data me-1"></i>前後測比較（後測區）</span>
+            <span class="small text-muted">${prog.pre?.measure_date || "-"} → ${prog.post?.measure_date || "-"}</span>
+          </div>
+          <div class="card-body">
+            <p class="small mb-3">${prog.summary_text || ""}</p>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-3">
+                <thead class="table-light">
+                  <tr><th>項目</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                  <tr>
+                    <td class="small">肌少症分期</td>
+                    <td class="small">${st.before || "-"}</td>
+                    <td class="small fw-semibold">${st.after || "-"}</td>
+                    <td class="small">—</td>
+                    <td>${stBadge}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="rounded p-3 mb-2" style="background:#f0f9ff">
+              <div class="fw-semibold small mb-1"><i class="bi bi-bicycle me-1"></i>期間運動（前測日至後測日）</div>
+              <div class="small">共 <b>${ex.sessions || 0}</b> 次 · 約 <b>${ex.total_duration_min || 0}</b> 分鐘 · 熱量 <b>${ex.total_calories || 0}</b> kcal</div>
+              <div class="small text-muted">類型：${typeLines}</div>
+            </div>
+            ${exRows ? `<div class="table-responsive"><table class="table table-sm mb-0">
+              <thead class="table-light"><tr><th>日期</th><th>器材／類型</th><th>時數</th><th>kcal</th></tr></thead>
+              <tbody>${exRows}</tbody></table></div>` : '<div class="small text-muted">此區間尚無運動輔具上傳紀錄。</div>'}
+          </div>
+        </div>`;
+      progBox.style.display = "block";
+    } else {
+      progBox.innerHTML = `
+        <div class="alert alert-light border small mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          <b>前後測比較</b>：${(prog && prog.reason) ? prog.reason : "至少需要 2 筆檢測（前測＋後測）才會顯示進步分析。"}
+        </div>`;
+      progBox.style.display = "block";
+    }
+
     const hist = [...data.history].reverse();
     const dates = hist.map((h) => (h.measure_date || "").slice(5) || h.measure_time || "-");
     const gripStd = isMale ? 28 : 18;

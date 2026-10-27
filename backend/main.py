@@ -1716,6 +1716,171 @@ def list_cases(
     return {"total": total, "page": page, "page_size": page_size, "items": result}
 
 
+
+def _num_delta(before, after, higher_better: bool):
+    """回傳 (delta, improved: bool|None, label)."""
+    if before is None or after is None:
+        return None, None, "-"
+    try:
+        b, a = float(before), float(after)
+    except Exception:
+        return None, None, "-"
+    d = round(a - b, 2)
+    if higher_better:
+        improved = a > b
+        same = a == b
+    else:
+        improved = a < b
+        same = a == b
+    if same:
+        return d, None, "持平"
+    return d, improved, ("進步" if improved else "退步")
+
+
+def build_case_progress(db: Session, id_card: str, records: list) -> dict:
+    """
+    前測=最早一筆有體適能數據的檢測；後測=最新一筆。
+    中間區間彙總運動紀錄（ExerciseLog）。
+    """
+    if not records:
+        return {"available": False, "reason": "無檢測資料"}
+
+    # records 已由新到舊；前測取最舊，後測取最新
+    ordered = list(reversed(records))  # 舊 → 新
+    pre = ordered[0]
+    post = ordered[-1]
+    if pre.id == post.id:
+        return {
+            "available": False,
+            "reason": "目前只有 1 筆檢測，完成後測後即可比較",
+            "pre": None,
+            "post": None,
+        }
+
+    def pack(r):
+        return {
+            "id": r.id,
+            "measure_date": r.measure_date,
+            "measure_time": r.measure_time,
+            "grip_strength": r.grip_strength,
+            "chair_stand_time": r.chair_stand_time,
+            "walking_time": r.walking_time,
+            "smi": r.smi,
+            "body_fat": r.body_fat,
+            "bmi": r.bmi,
+            "sarcopenia_stage": r.sarcopenia_stage,
+            "weight": r.weight,
+        }
+
+    metrics = []
+    for label, key, higher in [
+        ("握力 kg", "grip_strength", True),
+        ("五次坐站 秒", "chair_stand_time", False),
+        ("走路時間 秒", "walking_time", False),
+        ("SMI", "smi", True),
+        ("體脂率 %", "body_fat", False),
+        ("BMI", "bmi", False),
+    ]:
+        b = getattr(pre, key, None)
+        a = getattr(post, key, None)
+        delta, improved, status = _num_delta(b, a, higher)
+        metrics.append({
+            "label": label,
+            "before": b,
+            "after": a,
+            "delta": delta,
+            "improved": improved,
+            "status": status,
+            "higher_better": higher,
+        })
+
+    # 分期文字比較（不計數值方向）
+    stage_before = pre.sarcopenia_stage or "-"
+    stage_after = post.sarcopenia_stage or "-"
+    stage_rank = {"正常": 0, "肌少症前期": 1, "肌少症": 2, "嚴重肌少症": 3}
+    rb, ra = stage_rank.get(stage_before), stage_rank.get(stage_after)
+    if rb is not None and ra is not None:
+        if ra < rb:
+            stage_status = "進步"
+            stage_improved = True
+        elif ra > rb:
+            stage_status = "退步"
+            stage_improved = False
+        else:
+            stage_status = "持平"
+            stage_improved = None
+    else:
+        stage_status = "-"
+        stage_improved = None
+
+    # 運動區間：前測日 ~ 後測日
+    start_d = (pre.measure_date or "")[:10]
+    end_d = (post.measure_date or "")[:10]
+    exercise_summary = {
+        "sessions": 0,
+        "total_duration_min": 0,
+        "total_calories": 0,
+        "by_type": {},
+        "items": [],
+    }
+    try:
+        if ExerciseLog is not None:
+            q = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card)
+            if start_d:
+                q = q.filter(ExerciseLog.measure_date >= start_d)
+            if end_d:
+                q = q.filter(ExerciseLog.measure_date <= end_d)
+            logs = q.order_by(ExerciseLog.measure_time.asc()).all()
+            exercise_summary["sessions"] = len(logs)
+            dur = 0.0
+            cal = 0.0
+            by_type = {}
+            items = []
+            for lg in logs[:100]:
+                if lg.duration_sec:
+                    dur += float(lg.duration_sec)
+                if lg.calories:
+                    cal += float(lg.calories)
+                t = lg.exercise_type or "其他"
+                by_type[t] = by_type.get(t, 0) + 1
+                items.append({
+                    "date": lg.measure_date,
+                    "type": t,
+                    "machine_name": lg.machine_name,
+                    "duration_sec": lg.duration_sec,
+                    "calories": lg.calories,
+                    "summary": lg.summary,
+                })
+            exercise_summary["total_duration_min"] = round(dur / 60.0, 1)
+            exercise_summary["total_calories"] = round(cal, 1)
+            exercise_summary["by_type"] = by_type
+            exercise_summary["items"] = items
+    except Exception:
+        pass
+
+    improved_n = sum(1 for m in metrics if m["improved"] is True)
+    declined_n = sum(1 for m in metrics if m["improved"] is False)
+
+    return {
+        "available": True,
+        "pre": pack(pre),
+        "post": pack(post),
+        "metrics": metrics,
+        "stage": {
+            "before": stage_before,
+            "after": stage_after,
+            "status": stage_status,
+            "improved": stage_improved,
+        },
+        "exercise": exercise_summary,
+        "summary_text": (
+            f"前測 {start_d or '-'} → 後測 {end_d or '-'}："
+            f"進步 {improved_n} 項、退步 {declined_n} 項、分期 {stage_status}；"
+            f"期間運動 {exercise_summary['sessions']} 次、約 {exercise_summary['total_duration_min']} 分鐘。"
+        ),
+    }
+
+
 @app.get("/api/cases/{id_card}", tags=["Cases"])
 def get_case(
     id_card: str,
@@ -1789,6 +1954,7 @@ def get_case(
             chair_stand_time=latest.chair_stand_time,
             walking_time=latest.walking_time,
         ),
+        "progress": build_case_progress(db, id_card, records),
     }
 
 
