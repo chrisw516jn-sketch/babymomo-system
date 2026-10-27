@@ -1881,6 +1881,49 @@ def build_case_progress(db: Session, id_card: str, records: list) -> dict:
     }
 
 
+
+@app.get("/api/progress", tags=["Progress"])
+def list_progress(
+    q: Optional[str] = None,
+    only_comparable: bool = True,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """後測區：列出可前後測比較的個案摘要。"""
+    # 每人最新兩筆（用子查詢較重，改以分組取 id_card）
+    query = db.query(Measurement.id_card, Measurement.user_name, func.count(Measurement.id).label("cnt"))
+    if q:
+        like = f"%{q.strip()}%"
+        query = query.filter(or_(Measurement.id_card.ilike(like), Measurement.user_name.ilike(like)))
+    query = query.group_by(Measurement.id_card, Measurement.user_name)
+    if only_comparable:
+        query = query.having(func.count(Measurement.id) >= 2)
+    query = query.order_by(func.max(Measurement.measure_time).desc())
+    total = query.count()
+    rows = query.offset((page - 1) * page_size).limit(page_size).all()
+    items = []
+    for id_card, user_name, cnt in rows:
+        recs = (
+            db.query(Measurement)
+            .filter(Measurement.id_card == id_card)
+            .order_by(Measurement.measure_time.desc())
+            .all()
+        )
+        prog = build_case_progress(db, id_card, recs)
+        latest = recs[0] if recs else None
+        items.append({
+            "id_card": id_card,
+            "user_name": user_name or (latest.user_name if latest else ""),
+            "gender": latest.gender if latest else None,
+            "age": latest.age if latest else None,
+            "record_count": cnt,
+            "progress": prog,
+        })
+    return {"total": total, "page": page, "items": items}
+
+
 @app.get("/api/cases/{id_card}", tags=["Cases"])
 def get_case(
     id_card: str,

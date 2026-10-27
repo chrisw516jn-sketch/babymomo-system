@@ -5,7 +5,7 @@ let currentPage = 1;
 let currentCaseId = null;
 let dupPage = 1;
 const PAGE_SIZE = 30;
-const VIEWS = ["dashboard", "cases", "records", "exercises", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
+const VIEWS = ["dashboard", "cases", "records", "exercises", "progress", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
 let exPage = 1;
 
 async function api(path, options = {}) {
@@ -179,6 +179,7 @@ function showView(name) {
   if (name === "records") loadRecords();
   if (name === "alerts") loadAlerts();
   if (name === "cases") loadCases();
+  if (name === "progress") loadProgressList();
   if (name === "users") loadUsers();
   if (name === "settings") {
     loadThresholds();
@@ -388,6 +389,148 @@ async function loadReminders() {
     card.style.display = "none";
   }
 }
+
+
+async function loadProgressList() {
+  const box = document.getElementById("progressList");
+  const detail = document.getElementById("progressDetail");
+  if (!box) return;
+  if (detail) { detail.style.display = "none"; detail.innerHTML = ""; }
+  const q = document.getElementById("progressQ")?.value?.trim() || "";
+  const only = document.getElementById("progressOnlyComp")?.checked;
+  let url = "/api/progress?page_size=100";
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (only) url += "&only_comparable=true";
+  else url += "&only_comparable=false";
+  box.innerHTML = '<div class="text-muted">載入中...</div>';
+  try {
+    const data = await api(url);
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="alert alert-info">目前沒有可顯示的個案。請先完成至少 2 次檢測（前測＋後測）。</div>';
+      return;
+    }
+    box.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-hover align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>姓名</th><th>身分證</th><th>檢測筆數</th>
+              <th>前測日</th><th>後測日</th><th>分期變化</th>
+              <th>進步/退步</th><th>期間運動</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.items.map((it) => {
+              const p = it.progress || {};
+              const pre = p.pre || {};
+              const post = p.post || {};
+              const st = p.stage || {};
+              const ex = p.exercise || {};
+              let stBadge = "-";
+              if (st.status === "進步") stBadge = '<span class="badge bg-success">進步</span>';
+              else if (st.status === "退步") stBadge = '<span class="badge bg-danger">退步</span>';
+              else if (st.status === "持平") stBadge = '<span class="badge bg-warning text-dark">持平</span>';
+              else if (!p.available) stBadge = '<span class="text-muted small">資料不足</span>';
+              const imp = (p.metrics || []).filter(m => m.improved === true).length;
+              const dec = (p.metrics || []).filter(m => m.improved === false).length;
+              const masked = (it.id_card || "").length >= 6 ? it.id_card.slice(0,6)+"****" : (it.id_card || "");
+              return `<tr>
+                <td class="fw-semibold">${it.user_name || "-"}</td>
+                <td class="small text-muted">${masked}</td>
+                <td>${it.record_count || 0}</td>
+                <td class="small">${pre.measure_date || "-"}</td>
+                <td class="small">${post.measure_date || "-"}</td>
+                <td>${stBadge}<div class="small text-muted">${st.before || ""} → ${st.after || ""}</div></td>
+                <td class="small"><span class="text-success">↑${imp}</span> / <span class="text-danger">↓${dec}</span></td>
+                <td class="small">${ex.sessions || 0} 次 · ${ex.total_duration_min || 0} 分</td>
+                <td>
+                  <button class="btn btn-sm btn-outline-primary" onclick="showProgressDetail('${it.id_card}')">詳情</button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="showView('records'); setTimeout(()=>openCase('${it.id_card}'),200)">個案</button>
+                </td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="small text-muted">共 ${data.total || 0} 人</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
+
+async function showProgressDetail(idCard) {
+  const detail = document.getElementById("progressDetail");
+  if (!detail) return;
+  detail.style.display = "block";
+  detail.innerHTML = '<div class="text-muted">載入詳情...</div>';
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
+    const prog = data.progress;
+    const p = data.profile || {};
+    if (!prog || !prog.available) {
+      detail.innerHTML = `<div class="alert alert-warning">${prog?.reason || "無法比較"}</div>`;
+      return;
+    }
+    const rows = (prog.metrics || []).map((m) => {
+      let badge = '<span class="badge bg-secondary">—</span>';
+      if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
+      else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
+      else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
+      const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
+      return `<tr>
+        <td>${m.label}</td>
+        <td>${m.before != null ? m.before : "-"}</td>
+        <td class="fw-semibold">${m.after != null ? m.after : "-"}</td>
+        <td>${d}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join("");
+    const st = prog.stage || {};
+    const ex = prog.exercise || {};
+    const exRows = (ex.items || []).slice(-12).reverse().map((it) =>
+      `<tr>
+        <td class="small">${it.date || "-"}</td>
+        <td class="small">${it.machine_name || it.type || "-"}</td>
+        <td class="small">${it.duration_sec != null ? (Math.round(it.duration_sec/60*10)/10)+" 分" : "-"}</td>
+        <td class="small">${it.calories != null ? it.calories : "-"}</td>
+      </tr>`
+    ).join("");
+    detail.innerHTML = `
+      <div class="card border-primary shadow-sm">
+        <div class="card-header bg-primary text-white py-2 d-flex justify-content-between">
+          <span><i class="bi bi-person-badge me-1"></i>${p.user_name || ""} · 前後測詳情</span>
+          <button class="btn btn-sm btn-light" onclick="document.getElementById('progressDetail').style.display='none'">關閉</button>
+        </div>
+        <div class="card-body">
+          <p class="small">${prog.summary_text || ""}</p>
+          <div class="table-responsive">
+            <table class="table table-sm">
+              <thead class="table-light"><tr><th>項目</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
+              <tbody>
+                ${rows}
+                <tr>
+                  <td>肌少症分期</td>
+                  <td>${st.before || "-"}</td>
+                  <td class="fw-semibold">${st.after || "-"}</td>
+                  <td>—</td>
+                  <td>${st.status || "-"}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="rounded p-3 mb-2" style="background:#f0f9ff">
+            <div class="fw-semibold small">期間運動</div>
+            <div class="small">共 <b>${ex.sessions||0}</b> 次 · <b>${ex.total_duration_min||0}</b> 分鐘 · <b>${ex.total_calories||0}</b> kcal</div>
+          </div>
+          ${exRows ? `<table class="table table-sm mb-0"><thead class="table-light"><tr><th>日期</th><th>器材</th><th>時間</th><th>kcal</th></tr></thead><tbody>${exRows}</tbody></table>` : '<div class="small text-muted">此期間無運動上傳紀錄</div>'}
+        </div>
+      </div>`;
+    detail.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    detail.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
+
 
 async function loadCases() {
   const q = document.getElementById("caseQ").value.trim();
