@@ -1446,6 +1446,7 @@ async function loadAlerts() {
               <button class="btn btn-sm btn-outline-secondary" onclick="goCaseDetail('${a.id_card}')">看個案</button>
               <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})"><i class="bi bi-line"></i> 傳 LINE</button>
               ${handled}
+              <button class="btn btn-sm btn-outline-danger" onclick="deleteAlertMeasurement(${a.id}, '${a.id_card}')">刪除</button>
             </div>
           </div>
           <div class="row g-2 mb-2">
@@ -1929,6 +1930,27 @@ async function resolveIssue(id, action) {
     loadIssues();
   } catch (e) {
     alert(e.message);
+  }
+}
+
+
+
+async function deleteAlertMeasurement(alertId, idCard) {
+  if (!confirm(`確定刪除 ${idCard} 的這筆檢測紀錄嗎？\n（刪除後無法復原）`)) return;
+  try {
+    const alerts = await api("/api/alerts?page_size=200");
+    const alertObj = (alerts.items || []).find(a => a.id === alertId);
+    if (!alertObj || !alertObj.measurement_id) {
+      alert("找不到對應的檢測紀錄 ID");
+      return;
+    }
+    await api(`/api/measurements/${alertObj.measurement_id}`, { method: "DELETE" });
+    alert("已刪除");
+    loadAlerts();
+    if (typeof loadStats === "function") loadStats();
+    if (typeof loadAlertCount === "function") loadAlertCount();
+  } catch (e) {
+    alert("刪除失敗：" + e.message);
   }
 }
 
