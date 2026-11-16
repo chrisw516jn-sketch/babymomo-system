@@ -470,8 +470,11 @@ async function showProgressDetail(idCard) {
       else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
       else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
       const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
+      // 標準值 = 這位長輩自己在寶貝機測出來的前測值
+      const std = m.before != null ? m.before : "-";
       return `<tr>
         <td>${m.label}</td>
+        <td class="small text-primary">${std}</td>
         <td>${m.before != null ? m.before : "-"}</td>
         <td class="fw-semibold">${m.after != null ? m.after : "-"}</td>
         <td>${d}</td>
@@ -498,11 +501,12 @@ async function showProgressDetail(idCard) {
           <p class="small">${prog.summary_text || ""}</p>
           <div class="table-responsive">
             <table class="table table-sm">
-              <thead class="table-light"><tr><th>項目</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
+              <thead class="table-light"><tr><th>項目</th><th>標準值（前測）</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
               <tbody>
                 ${rows}
                 <tr>
                   <td>肌少症分期</td>
+                  <td class="small text-muted">—</td>
                   <td>${st.before || "-"}</td>
                   <td class="fw-semibold">${st.after || "-"}</td>
                   <td>—</td>
@@ -1446,7 +1450,6 @@ async function loadAlerts() {
               <button class="btn btn-sm btn-outline-secondary" onclick="goCaseDetail('${a.id_card}')">看個案</button>
               <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})"><i class="bi bi-line"></i> 傳 LINE</button>
               ${handled}
-              <button class="btn btn-sm btn-outline-danger" onclick="deleteAlertMeasurement(${a.id}, '${a.id_card}')">刪除</button>
             </div>
           </div>
           <div class="row g-2 mb-2">
@@ -1930,27 +1933,6 @@ async function resolveIssue(id, action) {
     loadIssues();
   } catch (e) {
     alert(e.message);
-  }
-}
-
-
-
-async function deleteAlertMeasurement(alertId, idCard) {
-  if (!confirm(`確定刪除 ${idCard} 的這筆檢測紀錄嗎？\n（刪除後無法復原）`)) return;
-  try {
-    const alerts = await api("/api/alerts?page_size=200");
-    const alertObj = (alerts.items || []).find(a => a.id === alertId);
-    if (!alertObj || !alertObj.measurement_id) {
-      alert("找不到對應的檢測紀錄 ID");
-      return;
-    }
-    await api(`/api/measurements/${alertObj.measurement_id}`, { method: "DELETE" });
-    alert("已刪除");
-    loadAlerts();
-    if (typeof loadStats === "function") loadStats();
-    if (typeof loadAlertCount === "function") loadAlertCount();
-  } catch (e) {
-    alert("刪除失敗：" + e.message);
   }
 }
 
