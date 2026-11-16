@@ -464,17 +464,28 @@ async function showProgressDetail(idCard) {
       detail.innerHTML = `<div class="alert alert-warning">${prog?.reason || "無法比較"}</div>`;
       return;
     }
+    const gender = (p.gender || (prog.pre && prog.pre.gender) || "").toUpperCase();
+    const isMale = gender === "M" || gender === "男";
+    const isFemale = gender === "F" || gender === "女";
+    // 寶貝機系統內建標準值
+    const standardMap = {
+      "握力 kg": isMale ? "≥ 28" : (isFemale ? "≥ 18" : "男≥28 / 女≥18"),
+      "五次坐站 秒": "< 12",
+      "走路時間 秒": "< 20",
+      "SMI": isMale ? "≥ 7.0" : (isFemale ? "≥ 5.7" : "男≥7.0 / 女≥5.7"),
+      "體脂率 %": isMale ? "10～20%" : (isFemale ? "23～36.9%" : "男10-20 / 女23-36.9"),
+      "BMI": "18.5～23.9",
+    };
     const rows = (prog.metrics || []).map((m) => {
       let badge = '<span class="badge bg-secondary">—</span>';
       if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
       else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
       else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
       const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
-      // 標準值 = 這位長輩自己在寶貝機測出來的前測值
-      const std = m.before != null ? m.before : "-";
+      const std = standardMap[m.label] || "-";
       return `<tr>
         <td>${m.label}</td>
-        <td class="small text-primary">${std}</td>
+        <td class="small text-muted">${std}</td>
         <td>${m.before != null ? m.before : "-"}</td>
         <td class="fw-semibold">${m.after != null ? m.after : "-"}</td>
         <td>${d}</td>
@@ -501,7 +512,7 @@ async function showProgressDetail(idCard) {
           <p class="small">${prog.summary_text || ""}</p>
           <div class="table-responsive">
             <table class="table table-sm">
-              <thead class="table-light"><tr><th>項目</th><th>標準值（前測）</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
+              <thead class="table-light"><tr><th>項目</th><th>標準值</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
               <tbody>
                 ${rows}
                 <tr>
