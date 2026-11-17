@@ -170,9 +170,24 @@
           <button class="btn btn-sm btn-outline-secondary" onclick="changePage(1)">下一頁</button>
         </div>
       </div>
-      <div id="casePanel" class="mt-3"></div>
+     <div id="casePanel" class="mt-3" style="display:none">
+  <div class="card p-3">
+    <div class="d-flex align-items-center gap-3 mb-3">
+      <div id="caseAvatar" class="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center" style="width:48px;height:48px;font-size:1.2rem">長</div>
+      <div>
+        <div id="caseName" class="fw-bold fs-5"></div>
+        <div id="caseMeta" class="small text-muted"></div>
+      </div>
+      <span id="caseCountBadge" class="badge bg-secondary ms-auto"></span>
     </div>
-
+    <div id="caseChartTag" class="small text-muted mb-2"></div>
+    <div id="caseMetrics" class="row g-2"></div>
+    <div id="caseProgressBox"></div>
+    <div class="mt-3">
+      <button id="btnPrintReport" class="btn btn-sm btn-outline-primary">列印報告</button>
+    </div>
+  </div>
+</div>
     <!-- Other views (minimal containers so app.js doesn't break) -->
     <div id="view-exercises" style="display:none"><div id="exBody"></div><div id="exMsg"></div></div>
     <div id="view-progress" style="display:none"><div id="progressList"></div><div id="progressDetail"></div></div>
