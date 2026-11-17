@@ -390,16 +390,26 @@ async function loadProgressList() {
   if (!box) return;
   if (detail) { detail.style.display = "none"; detail.innerHTML = ""; }
   const q = document.getElementById("progressQ")?.value?.trim() || "";
-  const only = document.getElementById("progressOnlyComp")?.checked;
-  let url = "/api/progress?page_size=100";
+  // 後測區預設只顯示可比較（資料足夠）的個案
+  const onlyCompEl = document.getElementById("progressOnlyComp");
+  const only = onlyCompEl ? !!onlyCompEl.checked : true;
+  let url = "/api/progress?page_size=100&only_comparable=true";
   if (q) url += `&q=${encodeURIComponent(q)}`;
-  if (only) url += "&only_comparable=true";
-  else url += "&only_comparable=false";
+  // 若使用者明確取消「僅可比較」，才顯示全部（仍會在前端過濾掉完全無法比較者）
+  if (onlyCompEl && !onlyCompEl.checked) {
+    url = "/api/progress?page_size=100&only_comparable=false";
+    if (q) url += `&q=${encodeURIComponent(q)}`;
+  }
   box.innerHTML = '<div class="text-muted">載入中...</div>';
   try {
     const data = await api(url);
-    if (!data.items || !data.items.length) {
-      box.innerHTML = '<div class="alert alert-info">目前沒有可顯示的個案。請先完成至少 2 次檢測（前測＋後測）。</div>';
+    // 資料不足（不可比較）一律不顯示
+    const items = (data.items || []).filter((it) => {
+      const p = it.progress || {};
+      return p.available === true;
+    });
+    if (!items.length) {
+      box.innerHTML = '<div class="alert alert-info">目前沒有可比較的前後測個案。請先完成至少 2 次檢測（前測＋後測）。</div>';
       return;
     }
     box.innerHTML = `
@@ -413,7 +423,7 @@ async function loadProgressList() {
             </tr>
           </thead>
           <tbody>
-            ${data.items.map((it) => {
+            ${items.map((it) => {
               const p = it.progress || {};
               const pre = p.pre || {};
               const post = p.post || {};
@@ -423,7 +433,6 @@ async function loadProgressList() {
               if (st.status === "進步") stBadge = '<span class="badge bg-success">進步</span>';
               else if (st.status === "退步") stBadge = '<span class="badge bg-danger">退步</span>';
               else if (st.status === "持平") stBadge = '<span class="badge bg-warning text-dark">持平</span>';
-              else if (!p.available) stBadge = '<span class="text-muted small">資料不足</span>';
               const imp = (p.metrics || []).filter(m => m.improved === true).length;
               const dec = (p.metrics || []).filter(m => m.improved === false).length;
               const masked = (it.id_card || "").length >= 6 ? it.id_card.slice(0,6)+"****" : (it.id_card || "");
@@ -445,7 +454,7 @@ async function loadProgressList() {
           </tbody>
         </table>
       </div>
-      <div class="small text-muted">共 ${data.total || 0} 人</div>`;
+      <div class="small text-muted">共 ${items.length} 人（僅顯示資料足夠、可前後測比較者）</div>`;
   } catch (e) {
     box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
   }
