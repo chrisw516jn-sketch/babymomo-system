@@ -624,6 +624,7 @@ async function loadRecords() {
   try {
     const data = await api(url);
     const tbody = document.getElementById("recordsBody");
+    if (!tbody) { console.warn("recordsBody not found"); return; }
     tbody.innerHTML = "";
     data.items.forEach((r) => {
       const tr = document.createElement("tr");
@@ -807,12 +808,16 @@ async function openCase(idCard) {
     const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
     const p = data.profile;
     const latest = data.latest;
-    document.getElementById("casePanel").style.display = "block";
+    const panel = document.getElementById("casePanel");
+    if (!panel) { alert("找不到個案面板"); return; }
+    panel.style.display = "block";
     const masked = (p.id_card || "").length >= 6 ? (p.id_card.slice(0,6) + "****") : (p.id_card || "");
     const av = document.getElementById("caseAvatar");
     if (av) av.textContent = (p.user_name || "長").slice(0,1);
-    document.getElementById("caseName").innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
-    document.getElementById("caseMeta").innerHTML =
+    const nameEl = document.getElementById("caseName");
+    if (nameEl) nameEl.innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
+    const metaEl = document.getElementById("caseMeta");
+    if (metaEl) metaEl.innerHTML =
       `${p.gender === "M" ? "男性" : "女性"} · ${p.age || "-"} 歲 · 身高 ${p.height || "-"} cm · 體重 ${p.weight || "-"} kg · BMI: ${p.bmi || "-"} · <span class="text-primary">最新檢測：${latest.measure_time || "-"}</span>`;
     const cnt = document.getElementById("caseCountBadge");
     if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
