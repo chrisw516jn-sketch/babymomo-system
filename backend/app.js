@@ -1012,10 +1012,8 @@ if (box) {
     renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
 
   const caseEl = document.getElementById("caseTrendChart");
-if (caseEl) {
-  const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
-  // ... 後面的 chart.setOption 整段都放在這個 if 裡面
-}
+  if (caseEl && typeof echarts !== "undefined") {
+    const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
     const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
     const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
     const w = latest.walking_time != null ? Number(latest.walking_time) : null;
@@ -1045,7 +1043,7 @@ if (caseEl) {
         trigger: "axis",
         formatter: (p) => {
           const i = items[p[0].dataIndex];
-          return `${i.name}<br/>實測：${i.raw}<br/>達標率：${i.pct}%`;
+          return i.name + "<br/>實測：" + i.raw + "<br/>達標率：" + i.pct + "%";
         },
       },
       grid: { left: 80, right: 56, top: 40, bottom: 24 },
@@ -1086,6 +1084,7 @@ if (caseEl) {
       }],
     }, true);
     window.addEventListener("resize", () => chart.resize());
+  }
 
     // 運動／復健建議
     const adv = data.exercise_advice;
