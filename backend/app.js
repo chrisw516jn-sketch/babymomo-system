@@ -1092,10 +1092,14 @@ if (box) {
     const advBox = document.getElementById("exerciseAdviceBox");
     if (adv && advBox) {
       advBox.style.display = "block";
-      document.getElementById("exerciseTitle").textContent = adv.title || "運動建議";
-      document.getElementById("exerciseSummary").textContent = adv.summary || "";
-      document.getElementById("exerciseItems").innerHTML = (adv.items || []).map((t) => `<li>${t}</li>`).join("");
-      document.getElementById("exerciseRetest").textContent = currentSuggestedRetest || "-";
+      const et = document.getElementById("exerciseTitle");
+      const es = document.getElementById("exerciseSummary");
+      const ei = document.getElementById("exerciseItems");
+      const er = document.getElementById("exerciseRetest");
+      if (et) et.textContent = adv.title || "運動建議";
+      if (es) es.textContent = adv.summary || "";
+      if (ei) ei.innerHTML = (adv.items || []).map((t) => `<li>${t}</li>`).join("");
+      if (er) er.textContent = currentSuggestedRetest || "-";
       // 若關懷下次日期空白，自動帶入建議日
       const nextInp = document.getElementById("careNextDate");
       if (nextInp && !nextInp.value && currentSuggestedRetest) {
@@ -1106,15 +1110,18 @@ if (box) {
     }
 
     const notes = data.care_notes || [];
-    document.getElementById("careNotesList").innerHTML = notes.length
-      ? notes.map((n) => `
-        <div class="border-bottom py-1">
-          <span class="text-muted">${n.created_at ? n.created_at.replace("T", " ").slice(0, 16) : ""} · ${n.created_by || ""}</span>
-          ${n.next_follow_date ? `<span class="badge bg-info text-dark ms-1">下次 ${n.next_follow_date}</span>` : ""}
-          <div>${n.content}</div>
-        </div>
-      `).join("")
-      : '<div class="text-muted">尚無關懷紀錄</div>';
+    const notesList = document.getElementById("careNotesList");
+    if (notesList) {
+      notesList.innerHTML = notes.length
+        ? notes.map((n) => `
+          <div class="border-bottom py-1">
+            <span class="text-muted">${n.created_at ? n.created_at.replace("T", " ").slice(0, 16) : ""} · ${n.created_by || ""}</span>
+            ${n.next_follow_date ? `<span class="badge bg-info text-dark ms-1">下次 ${n.next_follow_date}</span>` : ""}
+            <div>${n.content}</div>
+          </div>
+        `).join("")
+        : '<div class="text-muted">尚無關懷紀錄</div>';
+    }
 
     // 個案客製運動輔具建議
     const eqPlan = data.equipment_plan || {};
