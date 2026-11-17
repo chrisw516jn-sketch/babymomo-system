@@ -1006,8 +1006,11 @@ if (box) {
     renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
     renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
 
-    const caseEl = document.getElementById("caseTrendChart");
-    const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
+  const caseEl = document.getElementById("caseTrendChart");
+if (caseEl) {
+  const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
+  // ... 後面的 chart.setOption 整段都放在這個 if 裡面
+}
     const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
     const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
     const w = latest.walking_time != null ? Number(latest.walking_time) : null;
