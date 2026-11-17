@@ -1044,6 +1044,43 @@ def delete_measurement(
     add_audit(db, current_user.username, "delete_measurement", f"id={record_id}")
     return {"ok": True}
 
+@app.delete("/api/cases/{id_card}", tags=["Cases"])
+def delete_case(
+    id_card: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
+):
+    """刪除該身分證的全部資料（檢測、通報、運動、輔具計畫等）"""
+    id_card = (id_card or "").strip()
+    if not id_card:
+        raise HTTPException(400, "缺少身分證")
+
+    meas = db.query(Measurement).filter(Measurement.id_card == id_card).all()
+    for m in meas:
+        db.delete(m)
+
+    alerts = db.query(Alert).filter(Alert.id_card == id_card).all()
+    for a in alerts:
+        db.delete(a)
+
+    if ExerciseLog is not None:
+        logs = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card).all()
+        for lg in logs:
+            db.delete(lg)
+
+    if CaseEquipmentPlan is not None:
+        plans = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).all()
+        for p in plans:
+            db.delete(p)
+
+    notes = db.query(CareNote).filter(CareNote.id_card == id_card).all()
+    for n in notes:
+        db.delete(n)
+
+    db.commit()
+    add_audit(db, current_user.username, "delete_case", f"id_card={id_card} 全數刪除")
+    return {"ok": True, "deleted_measurements": len(meas)}
+
 
 # ========== 運動輔具紀錄 ==========
 @app.get("/api/exercises", tags=["Exercise"])
