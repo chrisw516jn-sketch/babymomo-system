@@ -1044,42 +1044,46 @@ def delete_measurement(
     add_audit(db, current_user.username, "delete_measurement", f"id={record_id}")
     return {"ok": True}
 
+
 @app.delete("/api/cases/{id_card}", tags=["Cases"])
 def delete_case(
     id_card: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
 ):
-    """刪除該身分證的全部資料（檢測、通報、運動、輔具計畫等）"""
+    """刪除此個案的全部資料（檢測紀錄、異常通報、運動紀錄、客製輔具等）。"""
     id_card = (id_card or "").strip()
     if not id_card:
         raise HTTPException(400, "缺少身分證")
 
-    meas = db.query(Measurement).filter(Measurement.id_card == id_card).all()
-    for m in meas:
-        db.delete(m)
+    # 刪除檢測紀錄
+    meas_count = db.query(Measurement).filter(Measurement.id_card == id_card).delete(synchronize_session=False)
 
-    alerts = db.query(Alert).filter(Alert.id_card == id_card).all()
-    for a in alerts:
-        db.delete(a)
+    # 刪除異常通報
+    alert_count = 0
+    if "Alert" in globals() and Alert is not None:
+        alert_count = db.query(Alert).filter(Alert.id_card == id_card).delete(synchronize_session=False)
 
-    if ExerciseLog is not None:
-        logs = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card).all()
-        for lg in logs:
-            db.delete(lg)
+    # 刪除運動紀錄
+    ex_count = 0
+    if "ExerciseLog" in globals() and ExerciseLog is not None:
+        ex_count = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card).delete(synchronize_session=False)
 
-    if CaseEquipmentPlan is not None:
-        plans = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).all()
-        for p in plans:
-            db.delete(p)
-
-    notes = db.query(CareNote).filter(CareNote.id_card == id_card).all()
-    for n in notes:
-        db.delete(n)
+    # 刪除客製輔具
+    eq_count = 0
+    if "CaseEquipmentPlan" in globals() and CaseEquipmentPlan is not None:
+        eq_count = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).delete(synchronize_session=False)
 
     db.commit()
-    add_audit(db, current_user.username, "delete_case", f"id_card={id_card} 全數刪除")
-    return {"ok": True, "deleted_measurements": len(meas)}
+    add_audit(db, current_user.username, "delete_case", f"id_card={id_card} meas={meas_count} alerts={alert_count} exercises={ex_count}")
+    return {
+        "ok": True,
+        "id_card": id_card,
+        "deleted_measurements": meas_count,
+        "deleted_alerts": alert_count,
+        "deleted_exercises": ex_count,
+        "deleted_equipment": eq_count,
+    }
 
 
 # ========== 運動輔具紀錄 ==========
