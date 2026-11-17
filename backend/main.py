@@ -172,14 +172,24 @@ def build_intervention_for_case(db: Session, id_card: str, vitals: dict, stage: 
     return plan
 
 
-def _alert_item_dict(db: Session, a: Alert) -> dict:
-    vitals = _vitals_for_alert(db, a)
-    plan = build_intervention_for_case(
-        db,
-        a.id_card,
-        vitals,
-        stage=a.sarcopenia_stage or vitals.get("sarcopenia_stage"),
-    )
+def _alert_item_dict(db: Session, a: Alert, include_plan: bool = False) -> dict:
+    """組裝通報項目。列表預設不帶介入方案，避免大量通報時逾時 502。"""
+    vitals = {}
+    plan = None
+    try:
+        vitals = _vitals_for_alert(db, a) or {}
+    except Exception:
+        vitals = {}
+    if include_plan:
+        try:
+            plan = build_intervention_for_case(
+                db,
+                a.id_card,
+                vitals,
+                stage=a.sarcopenia_stage or vitals.get("sarcopenia_stage"),
+            )
+        except Exception:
+            plan = None
     return {
         "id": a.id,
         "measurement_id": a.measurement_id,
@@ -2435,6 +2445,7 @@ def list_alerts(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     stage: Optional[str] = None,
+    include_plan: bool = False,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: Session = Depends(get_db),
@@ -2445,14 +2456,13 @@ def list_alerts(
     if role not in ("superadmin", "admin", "company_admin"):
         query = query.filter(Alert.target_roles.ilike(f"%{role}%"))
     if only_unread:
-        query = query.filter(Alert.is_read == False)
+        query = query.filter(Alert.is_read == False)  # noqa: E712
     if only_unhandled:
-        query = query.filter(Alert.is_handled == False)
+        query = query.filter(Alert.is_handled == False)  # noqa: E712
     if q:
         like = f"%{q.strip()}%"
         query = query.filter(or_(Alert.id_card.ilike(like), Alert.user_name.ilike(like)))
     if start_date:
-        # created_at is datetime; compare date prefix
         query = query.filter(Alert.created_at >= start_date)
     if end_date:
         query = query.filter(Alert.created_at <= end_date + " 23:59:59")
@@ -2460,13 +2470,16 @@ def list_alerts(
         query = query.filter(Alert.sarcopenia_stage == stage)
     total = query.count()
     items = query.order_by(Alert.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    # 計數用獨立輕量查詢，避免與分頁 filter 互相拖慢
+    unread = db.query(Alert).filter(Alert.is_read == False).count()  # noqa: E712
+    unhandled = db.query(Alert).filter(Alert.is_handled == False).count()  # noqa: E712
     return {
         "total": total,
-        "unread": db.query(Alert).filter(Alert.is_read == False).count(),
-        "unhandled": db.query(Alert).filter(Alert.is_handled == False).count(),
+        "unread": unread,
+        "unhandled": unhandled,
         "page": page,
         "items": [
-            _alert_item_dict(db, a)
+            _alert_item_dict(db, a, include_plan=include_plan)
             for a in items
         ],
     }
