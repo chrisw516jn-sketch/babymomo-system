@@ -947,7 +947,7 @@ if (box) {
       progBox.style.display = "block";
     }
 
-    const hist = [...data.history].reverse();
+    const hist = [...(data.history || [])].reverse();
     const dates = hist.map((h) => (h.measure_date || "").slice(5) || h.measure_time || "-");
     const gripStd = isMale ? 28 : 18;
     const smiStd = isMale ? 7.0 : 5.7;
@@ -1130,7 +1130,12 @@ if (box) {
     const eqMsg = document.getElementById("caseEqMsg");
     if (eqMsg) eqMsg.textContent = "";
   } catch (e) {
-    alert(e.message);
+    console.error("openCase error:", e);
+    // 避免圖表等非關鍵錯誤一直彈窗；真的需要才提示
+    const msg = (e && e.message) ? String(e.message) : String(e);
+    if (msg && !/chart is not defined/i.test(msg)) {
+      alert(msg);
+    }
   }
 }
 
