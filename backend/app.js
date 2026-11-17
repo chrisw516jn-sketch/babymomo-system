@@ -837,25 +837,22 @@ if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
       { icon:"●", label: "體脂率", val: latest.body_fat, unit: "%", hint: isMale ? "男 10~20%" : "女 23~36.9%" },
       { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
     ];
-   const box = document.getElementById("caseMetrics");
+ const box = document.getElementById("caseMetrics");
 if (box) {
   box.innerHTML = metrics.map((m) => {
-    // ... 原本的內容保持不變 ...
+    let note = m.note || "";
+    if (m.std != null && m.val != null && !note) {
+      const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
+      note = pass ? "達標" : "未達標";
+    }
+    const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
+    return `<div class="col-6 col-md-3"><div class="photo-metric">
+      <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
+      <div class="val">${m.val != null ? m.val : "-"} <small class="fs-6 text-muted fw-normal">${m.unit || ""}</small></div>
+      ${noteHtml}
+    </div></div>`;
   }).join("");
 }
-      let note = m.note || "";
-      if (m.std != null && m.val != null && !note) {
-        const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
-        note = pass ? "達標" : "未達標";
-      }
-      const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
-      return `<div class="col-6 col-md-3"><div class="photo-metric">
-        <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
-        <div class="val">${m.val != null ? m.val : "-"} <small class="fs-6 text-muted fw-normal">${m.unit || ""}</small></div>
-        ${noteHtml}
-      </div></div>`;
-    }).join("");
-
     
     
     // 前後測比較（後測區）
