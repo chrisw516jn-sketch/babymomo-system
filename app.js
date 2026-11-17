@@ -823,8 +823,9 @@ async function openCase(idCard) {
     if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
     const tag = document.getElementById("caseChartTag");
     if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
-    const btnPrint = document.getElementById("btnPrintReport");
-    if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
+    document.getElementById("btnPrintReport").onclick = () => {
+      openCaseReport(true);
+    };
 
     const isMale = p.gender === "M";
     const sex = isMale ? "男" : "女";
@@ -839,7 +840,6 @@ async function openCase(idCard) {
       { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
     ];
     const box = document.getElementById("caseMetrics");
-    if (!box) return;
     box.innerHTML = metrics.map((m) => {
       let note = m.note || "";
       if (m.std != null && m.val != null && !note) {
