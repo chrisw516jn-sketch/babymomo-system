@@ -1459,7 +1459,7 @@ async function loadAlerts() {
   const aStart = document.getElementById("alertStart")?.value || "";
   const aEnd = document.getElementById("alertEnd")?.value || "";
   const aStage = document.getElementById("alertStage")?.value || "";
-  let url = "/api/alerts?page_size=100";
+  let url = "/api/alerts?page_size=30";
   if (onlyUnhandled) url += "&only_unhandled=true";
   if (aq) url += `&q=${encodeURIComponent(aq)}`;
   if (aStart) url += `&start_date=${encodeURIComponent(aStart)}`;
