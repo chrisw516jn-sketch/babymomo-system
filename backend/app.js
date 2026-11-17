@@ -837,8 +837,12 @@ if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
       { icon:"●", label: "體脂率", val: latest.body_fat, unit: "%", hint: isMale ? "男 10~20%" : "女 23~36.9%" },
       { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
     ];
-    const box = document.getElementById("caseMetrics");
-    box.innerHTML = metrics.map((m) => {
+   const box = document.getElementById("caseMetrics");
+if (box) {
+  box.innerHTML = metrics.map((m) => {
+    // ... 原本的內容保持不變 ...
+  }).join("");
+}
       let note = m.note || "";
       if (m.std != null && m.val != null && !note) {
         const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
