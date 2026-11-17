@@ -57,19 +57,20 @@
         <input type="password" id="loginPassword" class="form-control" placeholder="密碼" />
       </div>
       <button class="btn btn-primary w-100" style="background:var(--primary);border:none" onclick="doLogin()">登入系統</button>
-      <div id="loginError" class="mt-2 small text-danger"></div>
+      <div id="loginError" class="mt-2 small text-danger d-none"></div>
     </div>
   </div>
 </div>
 
+<div id="app" style="display:none">
 <nav class="navbar navbar-dark navbar-custom px-3">
   <span class="navbar-brand mb-0 h1 fs-5">
     <i class="bi bi-heart-pulse me-2"></i>寶貝機 體適能檢測系統
   </span>
   <div class="d-flex align-items-center gap-3 text-white">
     <span id="alertBadge" class="badge bg-danger" style="display:none">0</span>
-    <span id="userDisplay" class="small"></span>
-    <button class="btn btn-sm btn-outline-light" onclick="logout()">登出</button>
+    <span id="navUser" class="small"></span>
+    <button class="btn btn-sm btn-outline-light" onclick="doLogout()">登出</button>
   </div>
 </nav>
 
@@ -190,5 +191,6 @@
 
 <script src="/app.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</div>
 </body>
 </html>
