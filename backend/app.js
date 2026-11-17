@@ -823,7 +823,7 @@ async function openCase(idCard) {
     if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
     const tag = document.getElementById("caseChartTag");
     if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
-    document.getElementById("btnPrintReport").onclick = () => {
+const btnPrint = document.getElementById("btnPrintReport"); = () => {
       openCaseReport(true);
     };
 
