@@ -571,6 +571,11 @@ async function loadCases() {
             ${c.open_alerts ? `<span class="badge bg-danger ms-1">未處理 ${c.open_alerts}</span>` : ""}
             ${c.need_care ? '<span class="badge bg-warning text-dark ms-1">需關懷</span>' : ""}
           </div>
+          <div class="mt-2 text-end">
+            <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteCase('${c.id_card}', '${c.user_name||""}')" title="刪除此個案全部資料">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
         </div>
       </div>
     `).join("");
@@ -618,6 +623,11 @@ async function loadRecords() {
         <td>${r.body_fat != null ? r.body_fat + "%" : "-"}</td>
         <td>${stageBadge(r.sarcopenia_stage)}</td>
         <td>${r.abnormal_count || 0}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteCase('${r.id_card}', '${r.user_name||""}')" title="刪除此個案全部資料">
+            <i class="bi bi-trash"></i>
+          </button>
+        </td>
       `;
       tbody.appendChild(tr);
     });
@@ -1986,5 +1996,20 @@ async function submitFeedback() {
     }
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+\n
+async function deleteCase(idCard, name) {
+  if (!idCard) return;
+  const who = name ? `${name}（${idCard}）` : idCard;
+  if (!confirm(`確定要刪除「${who}」的全部資料嗎？\n此操作會刪除該個案所有檢測紀錄、通報與相關資料，無法復原。`)) return;
+  try {
+    await api(`/api/cases/${encodeURIComponent(idCard)}`, { method: "DELETE" });
+    alert("已刪除");
+    if (typeof loadCases === "function") loadCases();
+    if (typeof loadRecords === "function") loadRecords();
+    if (typeof loadAlertCount === "function") loadAlertCount();
+  } catch (e) {
+    alert("刪除失敗：" + (e.message || e));
   }
 }
