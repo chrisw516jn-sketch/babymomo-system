@@ -569,7 +569,14 @@ async function loadCases() {
     }
     box.innerHTML = data.items.map((c) => `
       <div class="col-md-6 col-lg-4">
-        <div class="case-card p-3 ${c.need_care ? "need-care" : ""}" onclick="goCaseDetail('${c.id_card}')">
+        <div class="case-card p-3 ${c.need_care ? "need-care" : ""}" style="position:relative;">
+          <button class="btn btn-sm btn-outline-danger position-absolute" 
+                  style="top:8px; right:8px; z-index:2; padding:2px 8px;" 
+                  title="刪除此個案全部資料"
+                  onclick="event.stopPropagation(); deleteCase('${c.id_card}', '${(c.user_name||'').replace(/\'/g,"\\'")}')">
+            <i class="bi bi-trash"></i>
+          </button>
+          <div onclick="goCaseDetail('${c.id_card}')" style="cursor:pointer; padding-right:30px;">
           <div class="d-flex justify-content-between align-items-start">
             <div>
               <strong>${c.user_name}</strong>
@@ -585,6 +592,7 @@ async function loadCases() {
             共 ${c.total_records} 筆 · 異常 ${c.abnormal_times} 次
             ${c.open_alerts ? `<span class="badge bg-danger ms-1">未處理 ${c.open_alerts}</span>` : ""}
             ${c.need_care ? '<span class="badge bg-warning text-dark ms-1">需關懷</span>' : ""}
+          </div>
           </div>
         </div>
       </div>
@@ -616,6 +624,7 @@ async function loadRecords() {
   try {
     const data = await api(url);
     const tbody = document.getElementById("recordsBody");
+    if (!tbody) { console.warn("recordsBody not found"); return; }
     tbody.innerHTML = "";
     data.items.forEach((r) => {
       const tr = document.createElement("tr");
@@ -738,6 +747,33 @@ async function loadExercises() {
   }
 }
 
+function deleteCurrentCase() {
+  if (!currentCaseId) return alert("尚未選擇個案");
+  const nameEl = document.getElementById("caseName");
+  let name = currentCaseId;
+  if (nameEl) {
+    name = nameEl.innerText.split("\n")[0].replace(/[A-Z0-9]{6}\*\*\*\*/g, "").trim() || currentCaseId;
+  }
+  deleteCase(currentCaseId, name);
+}
+
+async function deleteCase(idCard, userName) {
+  const name = userName || idCard;
+  const msg = `確定要刪除個案「${name}」（${idCard}）的全部資料嗎？\n\n此動作會永久刪除：\n• 所有檢測紀錄\n• 相關異常通報\n• 運動輔具紀錄\n• 客製建議\n\n刪除後無法復原！`;
+  if (!confirm(msg)) return;
+  try {
+    const res = await api(`/api/cases/${encodeURIComponent(idCard)}`, { method: "DELETE" });
+    alert(`已成功刪除個案 ${name}\n\n刪除檢測紀錄：${res.deleted_measurements || 0} 筆`);
+    // 重新整理相關畫面
+    if (typeof loadCases === "function") loadCases();
+    closeCase();
+    if (typeof loadRecords === "function") loadRecords();
+    if (typeof loadDashboard === "function") loadDashboard();
+  } catch (e) {
+    alert("刪除失敗：" + (e.message || String(e)));
+  }
+}
+
 async function deleteExercise(id) {
   if (!confirm("確定刪除此筆運動紀錄？")) return;
   try {
@@ -772,12 +808,16 @@ async function openCase(idCard) {
     const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
     const p = data.profile;
     const latest = data.latest;
-    document.getElementById("casePanel").style.display = "block";
+    const panel = document.getElementById("casePanel");
+    if (!panel) { alert("找不到個案面板"); return; }
+    panel.style.display = "block";
     const masked = (p.id_card || "").length >= 6 ? (p.id_card.slice(0,6) + "****") : (p.id_card || "");
     const av = document.getElementById("caseAvatar");
     if (av) av.textContent = (p.user_name || "長").slice(0,1);
-    document.getElementById("caseName").innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
-    document.getElementById("caseMeta").innerHTML =
+    const nameEl = document.getElementById("caseName");
+    if (nameEl) nameEl.innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
+    const metaEl = document.getElementById("caseMeta");
+    if (metaEl) metaEl.innerHTML =
       `${p.gender === "M" ? "男性" : "女性"} · ${p.age || "-"} 歲 · 身高 ${p.height || "-"} cm · 體重 ${p.weight || "-"} kg · BMI: ${p.bmi || "-"} · <span class="text-primary">最新檢測：${latest.measure_time || "-"}</span>`;
     const cnt = document.getElementById("caseCountBadge");
     if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
