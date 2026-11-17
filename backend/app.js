@@ -825,9 +825,6 @@ async function openCase(idCard) {
     if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
 const btnPrint = document.getElementById("btnPrintReport");
 if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
-      openCaseReport(true);
-    };
-
     const isMale = p.gender === "M";
     const sex = isMale ? "男" : "女";
     const metrics = [
