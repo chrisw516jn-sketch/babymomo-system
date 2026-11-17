@@ -739,7 +739,12 @@ async function loadExercises() {
       tbody.appendChild(tr);
     });
     const info = document.getElementById("exPagerInfo");
-    if (info) info.textContent = `共 ${data.total || 0} 筆 · 第 ${data.page || 1} 頁`;
+   if (info) {
+  const totalPages = Math.max(1, Math.ceil((data.total || 0) / PAGE_SIZE));
+  info.innerHTML = `共 ${data.total || 0} 筆 · 第 ${data.page || 1} / ${totalPages} 頁
+    <button class="btn btn-sm btn-outline-secondary ms-2" onclick="exPage=Math.max(1,exPage-1);loadExercises()" ${exPage<=1?"disabled":""}>上一頁</button>
+    <button class="btn btn-sm btn-outline-secondary ms-1" onclick="exPage=Math.min(${totalPages},exPage+1);loadExercises()" ${exPage>=totalPages?"disabled":""}>下一頁</button>`;
+}
   } catch (e) {
     const msg = document.getElementById("exMsg");
     if (msg) msg.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
