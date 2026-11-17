@@ -464,28 +464,14 @@ async function showProgressDetail(idCard) {
       detail.innerHTML = `<div class="alert alert-warning">${prog?.reason || "無法比較"}</div>`;
       return;
     }
-    const gender = (p.gender || (prog.pre && prog.pre.gender) || "").toUpperCase();
-    const isMale = gender === "M" || gender === "男";
-    const isFemale = gender === "F" || gender === "女";
-    // 寶貝機系統內建標準值
-    const standardMap = {
-      "握力 kg": isMale ? "≥ 28" : (isFemale ? "≥ 18" : "男≥28 / 女≥18"),
-      "五次坐站 秒": "< 12",
-      "走路時間 秒": "< 20",
-      "SMI": isMale ? "≥ 7.0" : (isFemale ? "≥ 5.7" : "男≥7.0 / 女≥5.7"),
-      "體脂率 %": isMale ? "10～20%" : (isFemale ? "23～36.9%" : "男10-20 / 女23-36.9"),
-      "BMI": "18.5～23.9",
-    };
     const rows = (prog.metrics || []).map((m) => {
       let badge = '<span class="badge bg-secondary">—</span>';
       if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
       else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
       else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
       const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
-      const std = standardMap[m.label] || "-";
       return `<tr>
         <td>${m.label}</td>
-        <td class="small text-muted">${std}</td>
         <td>${m.before != null ? m.before : "-"}</td>
         <td class="fw-semibold">${m.after != null ? m.after : "-"}</td>
         <td>${d}</td>
@@ -512,12 +498,11 @@ async function showProgressDetail(idCard) {
           <p class="small">${prog.summary_text || ""}</p>
           <div class="table-responsive">
             <table class="table table-sm">
-              <thead class="table-light"><tr><th>項目</th><th>標準值</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
+              <thead class="table-light"><tr><th>項目</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
               <tbody>
                 ${rows}
                 <tr>
                   <td>肌少症分期</td>
-                  <td class="small text-muted">—</td>
                   <td>${st.before || "-"}</td>
                   <td class="fw-semibold">${st.after || "-"}</td>
                   <td>—</td>
@@ -586,6 +571,11 @@ async function loadCases() {
             ${c.open_alerts ? `<span class="badge bg-danger ms-1">未處理 ${c.open_alerts}</span>` : ""}
             ${c.need_care ? '<span class="badge bg-warning text-dark ms-1">需關懷</span>' : ""}
           </div>
+          <div class="mt-2 text-end">
+            <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteCase('${c.id_card}', '${c.user_name||""}')" title="刪除此個案全部資料">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
         </div>
       </div>
     `).join("");
@@ -633,6 +623,11 @@ async function loadRecords() {
         <td>${r.body_fat != null ? r.body_fat + "%" : "-"}</td>
         <td>${stageBadge(r.sarcopenia_stage)}</td>
         <td>${r.abnormal_count || 0}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation(); deleteCase('${r.id_card}', '${r.user_name||""}')" title="刪除此個案全部資料">
+            <i class="bi bi-trash"></i>
+          </button>
+        </td>
       `;
       tbody.appendChild(tr);
     });
@@ -2001,5 +1996,20 @@ async function submitFeedback() {
     }
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+\n
+async function deleteCase(idCard, name) {
+  if (!idCard) return;
+  const who = name ? `${name}（${idCard}）` : idCard;
+  if (!confirm(`確定要刪除「${who}」的全部資料嗎？\n此操作會刪除該個案所有檢測紀錄、通報與相關資料，無法復原。`)) return;
+  try {
+    await api(`/api/cases/${encodeURIComponent(idCard)}`, { method: "DELETE" });
+    alert("已刪除");
+    if (typeof loadCases === "function") loadCases();
+    if (typeof loadRecords === "function") loadRecords();
+    if (typeof loadAlertCount === "function") loadAlertCount();
+  } catch (e) {
+    alert("刪除失敗：" + (e.message || e));
   }
 }
