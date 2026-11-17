@@ -1,3413 +1,2045 @@
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Query, status, Body, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse, JSONResponse
-from sqlalchemy.orm import Session
-from sqlalchemy import func, or_, desc
-from typing import List, Optional
-from datetime import timedelta, datetime, timezone
-import io
-import csv
-import os
-import json
-from openpyxl import load_workbook
+const API = "";
+let token = localStorage.getItem("babymomo_token") || "";
+let currentUser = null;
+let currentPage = 1;
+let currentCaseId = null;
+let dupPage = 1;
+const PAGE_SIZE = 30;
+const VIEWS = ["dashboard", "cases", "records", "exercises", "progress", "duplicates", "alerts", "import", "report", "users", "settings", "audit", "issues", "api", "feedback"];
+let exPage = 1;
 
-# 自動載入 backend/.env（LINE Token 等），之後不用每次手動設環境變數
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-except Exception:
-    pass
+async function api(path, options = {}) {
+  const headers = options.headers || {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  if (!(options.body instanceof FormData) && options.body && !headers["Content-Type"]) {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(API + path, { ...options, headers });
+  if (res.status === 401) {
+    doLogout();
+    throw new Error("登入已過期");
+  }
+  if (options.raw) return res;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || (typeof data.detail === "string" ? data.detail : res.statusText) || "請求失敗");
+  return data;
+}
 
-from database import engine, get_db, Base
-from models import User, Measurement, AuditLog, Alert, CareNote, SystemConfig
-try:
-    from models import Feedback
-except Exception:
-    Feedback = None
-try:
-    from models import CaseEquipmentPlan
-except Exception:
-    CaseEquipmentPlan = None
-try:
-    from models import SystemIssue
-except Exception:
-    SystemIssue = None
-try:
-    from models import ExerciseLog
-except Exception:
-    ExerciseLog = None
-from schemas import (
-    UserCreate, UserUpdate, UserOut, Token, MeasurementCreate, MeasurementOut,
-    StatsOut, ImportResult, CareNoteCreate, CareNoteOut, ThresholdsOut,
-)
-try:
-    from schemas import FeedbackCreate, FeedbackOut
-except Exception:
-    FeedbackCreate = None
-    FeedbackOut = None
-from auth import (
-    get_password_hash, verify_password, create_access_token,
-    get_current_user, require_roles, get_user_by_username, ACCESS_TOKEN_EXPIRE_MINUTES,
-)
-from utils import (
-    calc_bmi, judge_sarcopenia, normalize_measure_time, format_alert_message,
-    bp_status, get_exercise_advice, suggested_retest_date, get_intervention_plan,
-)
-try:
-    from utils import get_default_equipment_catalog
-except Exception:
-    def get_default_equipment_catalog():
-        return []
-from line_notify import send_line_text, line_configured
-try:
-    from standards import compare_to_standards, walking_threshold
-except Exception:
-    def walking_threshold(*args, **kwargs):
-        return 20.0
-    def compare_to_standards(*args, **kwargs):
-        return {}
+async function downloadBlob(path, fallbackName) {
+  const res = await api(path, { raw: true });
+  if (!res.ok) {
+    let msg = "下載失敗";
+    try {
+      const j = await res.json();
+      msg = j.detail || msg;
+    } catch (_) {}
+    throw new Error(msg);
+  }
+  const blob = await res.blob();
+  let fname = fallbackName;
+  const cd = res.headers.get("Content-Disposition") || "";
+  const m = cd.match(/filename="?([^";]+)"?/i);
+  if (m) fname = m[1];
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
 
-app = FastAPI(
-    title="寶貝機 長者體適能與肌少衰弱檢測分析系統 API",
-    description="真實可用的後端 API，支援 CSV/Excel 匯入、多人登入、RESTful 串接",
-    version="2.0.0",
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-)
+function stageClass(stage) {
+  if (!stage) return "bg-secondary";
+  const s = String(stage);
+  if (s.indexOf("嚴重") >= 0) return "bg-danger";
+  if (s === "肌少症") return "bg-warning text-dark";
+  if (s.indexOf("前期") >= 0) return "bg-info text-dark";
+  if (s === "正常") return "bg-success";
+  return "bg-secondary";
+}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+/** 伺服器時間多為 UTC，顯示成台灣時間（UTC+8） */
+function fmtTaiwanTime(iso) {
+  if (!iso) return "";
+  try {
+    const s = String(iso).trim();
+    // 已是本機字串 yyyy-mm-dd hh:mm:ss
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(s) && s.indexOf("T") < 0) {
+      return s.slice(0, 19);
+    }
+    const d = new Date(s.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(s) ? s : s + "Z");
+    if (isNaN(d.getTime())) return s.replace("T", " ").slice(0, 19);
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Taipei",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const get = (t) => (parts.find((p) => p.type === t) || {}).value || "00";
+    return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}:${get("second")}`;
+  } catch (_) {
+    return String(iso).replace("T", " ").slice(0, 19);
+  }
+}
 
-DEFAULT_THRESHOLDS = {
-    "grip_male": 28.0,
-    "grip_female": 18.0,
-    "smi_male": 7.0,
-    "smi_female": 5.7,
-    "chair_stand": 12.0,
-    "walking_time": 20.0,
-    "systolic_high": 140,
-    "diastolic_high": 90,
+function stageBadge(stage) {
+  const map = {
+    "正常": "badge-normal",
+    "肌少症前期": "badge-pre",
+    "肌少症": "badge-sarco",
+    "嚴重肌少症": "badge-severe",
+  };
+  const cls = map[stage] || stageClass(stage);
+  return '<span class="badge ' + cls + '">' + (stage || "-") + "</span>";
+}
+
+// 避免舊快取或缺函式
+window.stageClass = stageClass;
+window.stageBadge = stageBadge;
+
+function isAdmin() {
+  return currentUser && ["superadmin", "admin", "company_admin"].includes(currentUser.role);
+}
+
+async function doLogin() {
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  const errBox = document.getElementById("loginError");
+  errBox.classList.add("d-none");
+  try {
+    const form = new URLSearchParams();
+    form.append("username", username);
+    form.append("password", password);
+    const res = await fetch(API + "/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "登入失敗");
+    token = data.access_token;
+    currentUser = data.user;
+    localStorage.setItem("babymomo_token", token);
+    localStorage.setItem("babymomo_user", JSON.stringify(currentUser));
+    enterApp();
+  } catch (e) {
+    errBox.textContent = e.message;
+    errBox.classList.remove("d-none");
+  }
+}
+
+function doLogout() {
+  token = "";
+  currentUser = null;
+  localStorage.removeItem("babymomo_token");
+  localStorage.removeItem("babymomo_user");
+  document.getElementById("authOverlay").style.display = "flex";
+  document.getElementById("app").style.display = "none";
+}
+
+function enterApp() {
+  document.getElementById("authOverlay").style.display = "none";
+  document.getElementById("app").style.display = "block";
+  document.getElementById("navUser").textContent =
+    `${currentUser.display_name}（${currentUser.role}）`;
+  document.querySelectorAll(".admin-only").forEach((el) => {
+    el.style.display = isAdmin() ? "" : "none";
+  });
+  setRange(90);
+  loadStats();
+  loadAlertCount();
+  if (isAdmin()) {
+    loadIssueCount();
+  }
+  showView("dashboard");
+  if (!window._alertTimer) {
+    window._alertTimer = setInterval(() => {
+      loadAlertCount();
+      if (isAdmin()) loadIssueCount();
+    }, 60000);
+  }
+}
+
+function showView(name) {
+  VIEWS.forEach((v) => {
+    const el = document.getElementById(`view-${v}`);
+    if (el) el.style.display = v === name ? "block" : "none";
+  });
+  document.querySelectorAll(".sidebar .nav-link[data-view]").forEach((a) => {
+    a.classList.toggle("active", a.getAttribute("data-view") === name);
+  });
+  if (name === "dashboard") {
+    loadStats();
+  }
+  if (name === "records") loadRecords();
+  if (name === "alerts") loadAlerts();
+  if (name === "cases") loadCases();
+  if (name === "progress") loadProgressList();
+  if (name === "users") loadUsers();
+  if (name === "settings") {
+    loadThresholds();
+    loadEquipment();
+  }
+  if (name === "audit") loadAudit();
+  if (name === "issues") loadIssues();
+  if (name === "report") {
+    const end = new Date();
+    const start = new Date();
+    start.setDate(end.getDate() - 30);
+    document.getElementById("repStart").value = start.toISOString().slice(0, 10);
+    document.getElementById("repEnd").value = end.toISOString().slice(0, 10);
+  }
+}
+
+function setRange(days) {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - days);
+  document.getElementById("statStart").value = start.toISOString().slice(0, 10);
+  document.getElementById("statEnd").value = end.toISOString().slice(0, 10);
+  loadStats();
+}
+
+function setRangePreset(kind) {
+  const end = new Date();
+  const start = new Date();
+  if (kind === "week") {
+    const day = end.getDay() || 7;
+    start.setDate(end.getDate() - day + 1);
+  } else if (kind === "month") {
+    start.setDate(1);
+  } else if (kind === "year") {
+    start.setMonth(0, 1);
+  } else if (kind === "all") {
+    document.getElementById("statStart").value = "";
+    document.getElementById("statEnd").value = "";
+    loadStats();
+    return;
+  }
+  document.getElementById("statStart").value = start.toISOString().slice(0, 10);
+  document.getElementById("statEnd").value = end.toISOString().slice(0, 10);
+  loadStats();
+}
+
+async function loadStats() {
+  const start = document.getElementById("statStart").value;
+  const end = document.getElementById("statEnd").value;
+  let url = "/api/stats?";
+  if (start) url += `start_date=${start}&`;
+  if (end) url += `end_date=${end}&`;
+  try {
+    const s = await api(url);
+    document.getElementById("sTotal").textContent = s.total_records;
+    document.getElementById("sUsers").textContent = s.unique_users;
+    document.getElementById("sGrip").textContent = s.avg_grip + " kg";
+    document.getElementById("sMulti").textContent = s.multi_abnormal_rate + "%";
+    document.getElementById("summaryText").textContent = s.summary_text;
+
+    // --- 肌少症分期：圓餅圖 ---
+    const pieEl = document.getElementById("pieChart");
+    const pie = echarts.getInstanceByDom(pieEl) || echarts.init(pieEl);
+    const order = ["嚴重肌少症", "肌少症", "肌少症前期", "正常"];
+    const colorMap = {
+      "正常": "#cbd5e1",
+      "肌少症前期": "#f5c542",
+      "肌少症": "#f08a4b",
+      "嚴重肌少症": "#e06b8a",
+    };
+    const rawPie = s.sarcopenia_pie || [];
+    const pieData = order.map((n) => {
+      const hit = rawPie.find((d) => d.name === n);
+      return {
+        name: n,
+        value: hit ? hit.value : 0,
+        itemStyle: { color: colorMap[n] }
+      };
+    }).filter((d) => d.value > 0);
+
+    pie.setOption({
+      tooltip: {
+        trigger: "item",
+        formatter: "{b}：{c} 人（{d}%）"
+      },
+      legend: {
+        bottom: 0,
+        icon: "rect",
+        itemWidth: 12,
+        itemHeight: 8,
+        textStyle: { color: "#64748b", fontSize: 12 },
+      },
+      series: [{
+        type: "pie",
+        radius: ["0%", "68%"],
+        center: ["50%", "46%"],
+        data: pieData,
+        label: {
+          show: true,
+          formatter: "{b}\n{c} 人",
+          color: "#334155",
+          fontSize: 12,
+        },
+        labelLine: { length: 12, length2: 8 },
+        emphasis: { scale: true, scaleSize: 6 },
+      }],
+    }, true);
+
+    // --- 月度趨勢：檢測次數 + 平均握力雙長條 ---
+    const trendEl = document.getElementById("trendChart");
+    const trend = echarts.getInstanceByDom(trendEl) || echarts.init(trendEl);
+    const m = s.monthly_trends || { months: [], counts: [], avg_grip: [], avg_chair: [], avg_walk: [] };
+    const months = m.months || [];
+    trend.setOption({
+      color: ["#2bb8a8", "#8ea4f5"],
+      tooltip: { trigger: "axis" },
+      legend: {
+        data: ["檢測次數", "平均握力"],
+        top: 0,
+        textStyle: { color: "#64748b", fontSize: 12 },
+      },
+      grid: { left: 44, right: 44, top: 40, bottom: 36 },
+      xAxis: {
+        type: "category",
+        data: months,
+        axisLine: { lineStyle: { color: "#e2e8f0" } },
+        axisLabel: { color: "#94a3b8", fontSize: 11 },
+        axisTick: { show: false },
+      },
+      yAxis: [
+        {
+          type: "value",
+          name: "次數",
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8" },
+        },
+        {
+          type: "value",
+          name: "kg",
+          nameTextStyle: { color: "#94a3b8", fontSize: 11 },
+          splitLine: { show: false },
+          axisLabel: { color: "#94a3b8" },
+        },
+      ],
+      series: [
+        {
+          name: "檢測次數",
+          type: "bar",
+          barMaxWidth: 26,
+          data: m.counts || [],
+          itemStyle: { color: "#2bb8a8", borderRadius: [4, 4, 0, 0] },
+        },
+        {
+          name: "平均握力",
+          type: "bar",
+          yAxisIndex: 1,
+          barMaxWidth: 26,
+          data: m.avg_grip || [],
+          itemStyle: { color: "#8ea4f5", borderRadius: [4, 4, 0, 0] },
+        },
+      ],
+    }, true);
+
+    window.addEventListener("resize", () => {
+      pie.resize();
+      trend.resize();
+    });
+  } catch (e) {
+    document.getElementById("summaryText").textContent = "載入失敗：" + e.message;
+  }
+  loadReminders();
+}
+
+async function loadReminders() {
+  const card = document.getElementById("reminderCard");
+  const list = document.getElementById("reminderList");
+  if (!card || !list) return;
+  try {
+    const data = await api("/api/reminders?days=14");
+    if (!data.items || !data.items.length) {
+      card.style.display = "none";
+      return;
+    }
+    card.style.display = "block";
+    document.getElementById("reminderOverdue").textContent = `${data.overdue_count || 0} 筆逾期`;
+    list.innerHTML = data.items.slice(0, 30).map((r) => `
+      <div class="d-flex justify-content-between align-items-center border-bottom py-1 px-1 small">
+        <div>
+          <a href="#" onclick="goCaseDetail('${r.id_card}'); return false;" class="fw-semibold text-decoration-none">${r.user_name || r.id_card}</a>
+          ${stageBadge(r.stage)}
+          <span class="text-muted ms-1">${r.content ? r.content.slice(0, 40) : ""}</span>
+        </div>
+        <div class="text-nowrap">
+          <span class="badge ${r.overdue ? "bg-danger" : "bg-info text-dark"}">${r.next_follow_date || "-"}${r.overdue ? " 逾期" : ""}</span>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    card.style.display = "none";
+  }
 }
 
 
-def get_thresholds(db: Session) -> dict:
-    row = db.query(SystemConfig).filter(SystemConfig.key == "thresholds").first()
-    if not row:
-        return dict(DEFAULT_THRESHOLDS)
-    try:
-        data = json.loads(row.value)
-        out = dict(DEFAULT_THRESHOLDS)
-        out.update(data)
-        return out
-    except Exception:
-        return dict(DEFAULT_THRESHOLDS)
+async function loadProgressList() {
+  const box = document.getElementById("progressList");
+  const detail = document.getElementById("progressDetail");
+  if (!box) return;
+  if (detail) { detail.style.display = "none"; detail.innerHTML = ""; }
+  const q = document.getElementById("progressQ")?.value?.trim() || "";
+  const only = document.getElementById("progressOnlyComp")?.checked;
+  let url = "/api/progress?page_size=100";
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (only) url += "&only_comparable=true";
+  else url += "&only_comparable=false";
+  box.innerHTML = '<div class="text-muted">載入中...</div>';
+  try {
+    const data = await api(url);
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="alert alert-info">目前沒有可顯示的個案。請先完成至少 2 次檢測（前測＋後測）。</div>';
+      return;
+    }
+    box.innerHTML = `
+      <div class="table-responsive">
+        <table class="table table-hover align-middle">
+          <thead class="table-light">
+            <tr>
+              <th>姓名</th><th>身分證</th><th>檢測筆數</th>
+              <th>前測日</th><th>後測日</th><th>分期變化</th>
+              <th>進步/退步</th><th>期間運動</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${data.items.map((it) => {
+              const p = it.progress || {};
+              const pre = p.pre || {};
+              const post = p.post || {};
+              const st = p.stage || {};
+              const ex = p.exercise || {};
+              let stBadge = "-";
+              if (st.status === "進步") stBadge = '<span class="badge bg-success">進步</span>';
+              else if (st.status === "退步") stBadge = '<span class="badge bg-danger">退步</span>';
+              else if (st.status === "持平") stBadge = '<span class="badge bg-warning text-dark">持平</span>';
+              else if (!p.available) stBadge = '<span class="text-muted small">資料不足</span>';
+              const imp = (p.metrics || []).filter(m => m.improved === true).length;
+              const dec = (p.metrics || []).filter(m => m.improved === false).length;
+              const masked = (it.id_card || "").length >= 6 ? it.id_card.slice(0,6)+"****" : (it.id_card || "");
+              return `<tr>
+                <td class="fw-semibold">${it.user_name || "-"}</td>
+                <td class="small text-muted">${masked}</td>
+                <td>${it.record_count || 0}</td>
+                <td class="small">${pre.measure_date || "-"}</td>
+                <td class="small">${post.measure_date || "-"}</td>
+                <td>${stBadge}<div class="small text-muted">${st.before || ""} → ${st.after || ""}</div></td>
+                <td class="small"><span class="text-success">↑${imp}</span> / <span class="text-danger">↓${dec}</span></td>
+                <td class="small">${ex.sessions || 0} 次 · ${ex.total_duration_min || 0} 分</td>
+                <td>
+                  <button class="btn btn-sm btn-outline-primary" onclick="showProgressDetail('${it.id_card}')">詳情</button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="showView('records'); setTimeout(()=>openCase('${it.id_card}'),200)">個案</button>
+                </td>
+              </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="small text-muted">共 ${data.total || 0} 人</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
+
+async function showProgressDetail(idCard) {
+  const detail = document.getElementById("progressDetail");
+  if (!detail) return;
+  detail.style.display = "block";
+  detail.innerHTML = '<div class="text-muted">載入詳情...</div>';
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
+    const prog = data.progress;
+    const p = data.profile || {};
+    if (!prog || !prog.available) {
+      detail.innerHTML = `<div class="alert alert-warning">${prog?.reason || "無法比較"}</div>`;
+      return;
+    }
+    const gender = (p.gender || (prog.pre && prog.pre.gender) || "").toUpperCase();
+    const isMale = gender === "M" || gender === "男";
+    const isFemale = gender === "F" || gender === "女";
+    // 寶貝機系統內建標準值
+    const standardMap = {
+      "握力 kg": isMale ? "≥ 28" : (isFemale ? "≥ 18" : "男≥28 / 女≥18"),
+      "五次坐站 秒": "< 12",
+      "走路時間 秒": "< 20",
+      "SMI": isMale ? "≥ 7.0" : (isFemale ? "≥ 5.7" : "男≥7.0 / 女≥5.7"),
+      "體脂率 %": isMale ? "10～20%" : (isFemale ? "23～36.9%" : "男10-20 / 女23-36.9"),
+      "BMI": "18.5～23.9",
+    };
+    const rows = (prog.metrics || []).map((m) => {
+      let badge = '<span class="badge bg-secondary">—</span>';
+      if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
+      else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
+      else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
+      const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
+      const std = standardMap[m.label] || "-";
+      return `<tr>
+        <td>${m.label}</td>
+        <td class="small text-muted">${std}</td>
+        <td>${m.before != null ? m.before : "-"}</td>
+        <td class="fw-semibold">${m.after != null ? m.after : "-"}</td>
+        <td>${d}</td>
+        <td>${badge}</td>
+      </tr>`;
+    }).join("");
+    const st = prog.stage || {};
+    const ex = prog.exercise || {};
+    const exRows = (ex.items || []).slice(-12).reverse().map((it) =>
+      `<tr>
+        <td class="small">${it.date || "-"}</td>
+        <td class="small">${it.machine_name || it.type || "-"}</td>
+        <td class="small">${it.duration_sec != null ? (Math.round(it.duration_sec/60*10)/10)+" 分" : "-"}</td>
+        <td class="small">${it.calories != null ? it.calories : "-"}</td>
+      </tr>`
+    ).join("");
+    detail.innerHTML = `
+      <div class="card border-primary shadow-sm">
+        <div class="card-header bg-primary text-white py-2 d-flex justify-content-between">
+          <span><i class="bi bi-person-badge me-1"></i>${p.user_name || ""} · 前後測詳情</span>
+          <button class="btn btn-sm btn-light" onclick="document.getElementById('progressDetail').style.display='none'">關閉</button>
+        </div>
+        <div class="card-body">
+          <p class="small">${prog.summary_text || ""}</p>
+          <div class="table-responsive">
+            <table class="table table-sm">
+              <thead class="table-light"><tr><th>項目</th><th>標準值</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr></thead>
+              <tbody>
+                ${rows}
+                <tr>
+                  <td>肌少症分期</td>
+                  <td class="small text-muted">—</td>
+                  <td>${st.before || "-"}</td>
+                  <td class="fw-semibold">${st.after || "-"}</td>
+                  <td>—</td>
+                  <td>${st.status || "-"}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="rounded p-3 mb-2" style="background:#f0f9ff">
+            <div class="fw-semibold small">期間運動</div>
+            <div class="small">共 <b>${ex.sessions||0}</b> 次 · <b>${ex.total_duration_min||0}</b> 分鐘 · <b>${ex.total_calories||0}</b> kcal</div>
+          </div>
+          ${exRows ? `<table class="table table-sm mb-0"><thead class="table-light"><tr><th>日期</th><th>器材</th><th>時間</th><th>kcal</th></tr></thead><tbody>${exRows}</tbody></table>` : '<div class="small text-muted">此期間無運動上傳紀錄</div>'}
+        </div>
+      </div>`;
+    detail.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    detail.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
 
-def get_equipment_catalog(db: Session) -> list:
-    """讀取「預設範本」運動輔具建議目錄（非個案專用）。"""
-    row = db.query(SystemConfig).filter(SystemConfig.key == "equipment_catalog").first()
-    if not row:
-        return get_default_equipment_catalog()
-    try:
-        data = json.loads(row.value)
-        if isinstance(data, list) and data:
-            return data
-    except Exception:
-        pass
-    return get_default_equipment_catalog()
+async function loadCases() {
+  const q = document.getElementById("caseQ").value.trim();
+  const stage = document.getElementById("caseStage").value;
+  const need = document.getElementById("caseNeedCare").checked;
+  let url = `/api/cases?page=1&page_size=100`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (stage) url += `&stage=${encodeURIComponent(stage)}`;
+  if (need) url += `&need_care=true`;
+  const box = document.getElementById("casesGrid");
+  box.innerHTML = '<div class="col-12 text-muted">載入中...</div>';
+  try {
+    const data = await api(url);
+    document.getElementById("casesTotal").textContent = `共 ${data.total} 位個案`;
+    const chips = document.getElementById("quickCaseChips");
+    if (chips) {
+      const top = data.items.slice(0, 8);
+      chips.innerHTML = top.length
+        ? top.map((c) => {
+            const mask = (c.id_card || "").length >= 6 ? c.id_card.slice(0,6)+"****" : (c.id_card||"");
+            return `<button class="chip-btn" onclick="goCaseDetail('${c.id_card}')">${mask}（${c.user_name || ""} ${c.age || ""}歲）</button>`;
+          }).join("") + `<button class="chip-btn" onclick="showView('cases')">篩選「肌少症前期」</button>`
+        : '<span class="text-muted small">匯入資料後會出現個案按鈕</span>';
+    }
+    if (!data.items.length) {
+      box.innerHTML = '<div class="col-12"><div class="alert alert-light border">尚無個案資料，請先匯入檢測紀錄。</div></div>';
+      return;
+    }
+    box.innerHTML = data.items.map((c) => `
+      <div class="col-md-6 col-lg-4">
+        <div class="case-card p-3 ${c.need_care ? "need-care" : ""}" style="position:relative;">
+          <button class="btn btn-sm btn-outline-danger position-absolute" 
+                  style="top:8px; right:8px; z-index:2; padding:2px 8px;" 
+                  title="刪除此個案全部資料"
+                  onclick="event.stopPropagation(); deleteCase('${c.id_card}', '${(c.user_name||'').replace(/\'/g,"\\'")}')">
+            <i class="bi bi-trash"></i>
+          </button>
+          <div onclick="goCaseDetail('${c.id_card}')" style="cursor:pointer; padding-right:30px;">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong>${c.user_name}</strong>
+              <div class="small text-muted">${c.id_card} · ${c.gender === "M" ? "男" : "女"} · ${c.age || "-"}歲</div>
+            </div>
+            ${stageBadge(c.latest_stage)}
+          </div>
+          <div class="small mt-2">
+            最近：${c.latest_time || "-"}<br>
+            握力 ${c.grip_strength ?? "-"} · 坐站 ${c.chair_stand_time ?? "-"} · SMI ${c.smi ?? "-"}
+          </div>
+          <div class="small mt-1">
+            共 ${c.total_records} 筆 · 異常 ${c.abnormal_times} 次
+            ${c.open_alerts ? `<span class="badge bg-danger ms-1">未處理 ${c.open_alerts}</span>` : ""}
+            ${c.need_care ? '<span class="badge bg-warning text-dark ms-1">需關懷</span>' : ""}
+          </div>
+          </div>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="col-12"><div class="alert alert-danger">${e.message}</div></div>`;
+  }
+}
 
+function goCaseDetail(idCard) {
+  showView("records");
+  openCase(idCard);
+}
 
-def get_case_equipment_items(db: Session, id_card: str) -> Optional[list]:
-    """取得個案客製化輔具建議；若無則回傳 None（改用系統自動）。"""
-    if not id_card or CaseEquipmentPlan is None:
-        return None
-    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
-    if not row or not row.items_json:
-        return None
-    try:
-        data = json.loads(row.items_json)
-        if isinstance(data, list) and data:
-            return data
-    except Exception:
-        pass
-    return None
+async function loadRecords() {
+  const q = document.getElementById("searchQ").value.trim();
+  const start = document.getElementById("recStart").value;
+  const end = document.getElementById("recEnd").value;
+  const stage = document.getElementById("recStage").value;
+  const gender = document.getElementById("recGender").value;
+  const abnormal = document.getElementById("recAbnormalOnly").checked;
+  let url = `/api/measurements?page=${currentPage}&page_size=${PAGE_SIZE}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  if (start) url += `&start_date=${start}`;
+  if (end) url += `&end_date=${end}`;
+  if (stage) url += `&stage=${encodeURIComponent(stage)}`;
+  if (gender) url += `&gender=${gender}`;
+  if (abnormal) url += `&abnormal_only=true`;
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("recordsBody");
+    if (!tbody) { console.warn("recordsBody not found"); return; }
+    tbody.innerHTML = "";
+    data.items.forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.style.cursor = "pointer";
+      tr.onclick = () => openCase(r.id_card);
+      tr.innerHTML = `
+        <td class="text-primary">${r.id_card}</td>
+        <td>${r.user_name}</td>
+        <td>${r.gender === "M" ? "男" : "女"} / ${r.age || "-"}</td>
+        <td>${r.measure_time || r.measure_date || "-"}</td>
+        <td>${r.grip_strength != null ? r.grip_strength : "-"}</td>
+        <td>${r.chair_stand_time != null ? r.chair_stand_time : "-"}</td>
+        <td>${r.walking_time != null ? r.walking_time : "-"}</td>
+        <td>${r.smi != null ? r.smi : "-"}</td>
+        <td>${r.body_fat != null ? r.body_fat + "%" : "-"}</td>
+        <td>${stageBadge(r.sarcopenia_stage)}</td>
+        <td>${r.abnormal_count || 0}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    document.getElementById("recTotal").textContent = `共 ${data.total} 筆`;
+    document.getElementById("pageInfo").textContent = `${data.page} / ${Math.max(1, Math.ceil(data.total / PAGE_SIZE))}`;
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
+function changePage(delta) {
+  currentPage = Math.max(1, currentPage + delta);
+  loadRecords();
+}
 
-def build_intervention_for_case(db: Session, id_card: str, vitals: dict, stage: Optional[str] = None) -> dict:
-    """優先使用個案客製輔具；沒有才用預設範本＋條件觸發。"""
-    custom = get_case_equipment_items(db, id_card)
-    plan = get_intervention_plan(
-        stage=stage or vitals.get("sarcopenia_stage"),
-        grip=vitals.get("grip_strength"),
-        chair=vitals.get("chair_stand_time"),
-        walk=vitals.get("walking_time"),
-        smi=vitals.get("smi"),
-        gender=vitals.get("gender"),
-        bp_status_text=vitals.get("bp_status"),
-        equipment_catalog=get_equipment_catalog(db),
-    )
-    if custom is not None:
-        plan["equipment"] = [
-            {
-                "id": it.get("id") or "",
-                "name": it.get("name") or "",
-                "why": it.get("why") or "",
-                "how": it.get("how") or "",
-                "caution": it.get("caution") or "",
-            }
-            for it in custom
-            if isinstance(it, dict) and (it.get("name") or "").strip()
-        ]
-        plan["equipment_source"] = "custom"
-        plan["brand_note"] = "此為「個案客製化」運動輔具建議，由管理員依個人狀況編輯。"
-    else:
-        plan["equipment_source"] = "auto"
-    return plan
+async function loadDuplicates() {
+  const qEl = document.getElementById("dupQ");
+  const q = qEl ? qEl.value.trim() : "";
+  let url = `/api/duplicates?page=${dupPage}&page_size=${PAGE_SIZE}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("dupBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    (data.items || []).forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.id_card}</td>
+        <td>${r.user_name}</td>
+        <td>${r.gender === "M" ? "男" : "女"} / ${r.age || "-"}</td>
+        <td>${r.measure_time || r.measure_date || "-"}</td>
+        <td>${r.grip_strength != null ? r.grip_strength : "-"}</td>
+        <td>${r.chair_stand_time != null ? r.chair_stand_time : "-"}</td>
+        <td>${r.walking_time != null ? r.walking_time : "-"}</td>
+        <td>${r.smi != null ? r.smi : "-"}</td>
+        <td>${stageBadge(r.sarcopenia_stage)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const totalEl = document.getElementById("dupTotal");
+    if (totalEl) totalEl.textContent = `共 ${data.total} 筆（同一天較舊的資料）`;
+    const badge = document.getElementById("dupBadge");
+    if (badge) {
+      badge.textContent = data.total || 0;
+      badge.style.display = data.total ? "inline" : "none";
+    }
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
+function changeDupPage(delta) {
+  dupPage = Math.max(1, dupPage + delta);
+  loadDuplicates();
+}
 
-def _alert_item_dict(db: Session, a: Alert) -> dict:
-    vitals = _vitals_for_alert(db, a)
-    plan = build_intervention_for_case(
-        db,
-        a.id_card,
-        vitals,
-        stage=a.sarcopenia_stage or vitals.get("sarcopenia_stage"),
-    )
-    return {
-        "id": a.id,
-        "measurement_id": a.measurement_id,
-        "id_card": a.id_card,
-        "user_name": a.user_name,
-        "severity": a.severity,
-        "title": a.title,
-        "message": a.message,
-        "sarcopenia_stage": a.sarcopenia_stage,
-        "abnormal_count": a.abnormal_count,
-        "is_read": a.is_read,
-        "read_by": a.read_by,
-        "is_handled": a.is_handled,
-        "handled_by": a.handled_by,
-        "handle_note": a.handle_note,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
-        "vitals": vitals,
-        "intervention_plan": plan,
+const EX_TYPE_LABEL = {
+  ResistanceExercise: "阻力運動",
+  AerobicExercise: "有氧運動",
+  GripTraining: "握力訓練",
+};
+
+async function loadExercises() {
+  const q = (document.getElementById("exQ") || {}).value || "";
+  const start = (document.getElementById("exStart") || {}).value || "";
+  const end = (document.getElementById("exEnd") || {}).value || "";
+  const typ = (document.getElementById("exType") || {}).value || "";
+  let url = `/api/exercises?page=${exPage}&page_size=${PAGE_SIZE}`;
+  if (q.trim()) url += `&q=${encodeURIComponent(q.trim())}`;
+  if (start) url += `&start_date=${start}`;
+  if (end) url += `&end_date=${end}`;
+  if (typ) url += `&exercise_type=${encodeURIComponent(typ)}`;
+  try {
+    const data = await api(url);
+    const tbody = document.getElementById("exBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    (data.items || []).forEach((r) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td class="small">${r.measure_time || r.measure_date || "-"}</td>
+        <td class="text-primary small">${r.id_card || "-"}</td>
+        <td>${r.user_name || "-"}</td>
+        <td><span class="badge bg-info text-dark">${EX_TYPE_LABEL[r.exercise_type] || r.exercise_type || "-"}</span></td>
+        <td>${r.machine_name || r.machine_code || "-"}</td>
+        <td>${r.duration_sec != null ? r.duration_sec : "-"}</td>
+        <td>${r.reps != null ? r.reps : "-"}</td>
+        <td>${r.calories != null ? r.calories : "-"}</td>
+        <td>${r.distance_km != null ? r.distance_km : "-"}</td>
+        <td>${r.achievement_rate != null ? r.achievement_rate : "-"}</td>
+        <td class="small text-muted" style="max-width:220px">${r.summary || "-"}</td>
+        <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();deleteExercise(${r.id})">刪除</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+    const info = document.getElementById("exPagerInfo");
+    if (info) info.textContent = `共 ${data.total || 0} 筆 · 第 ${data.page || 1} 頁`;
+  } catch (e) {
+    const msg = document.getElementById("exMsg");
+    if (msg) msg.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+    else alert(e.message);
+  }
+}
+
+function deleteCurrentCase() {
+  if (!currentCaseId) return alert("尚未選擇個案");
+  const nameEl = document.getElementById("caseName");
+  let name = currentCaseId;
+  if (nameEl) {
+    name = nameEl.innerText.split("\n")[0].replace(/[A-Z0-9]{6}\*\*\*\*/g, "").trim() || currentCaseId;
+  }
+  deleteCase(currentCaseId, name);
+}
+
+async function deleteCase(idCard, userName) {
+  const name = userName || idCard;
+  const msg = `確定要刪除個案「${name}」（${idCard}）的全部資料嗎？\n\n此動作會永久刪除：\n• 所有檢測紀錄\n• 相關異常通報\n• 運動輔具紀錄\n• 客製建議\n\n刪除後無法復原！`;
+  if (!confirm(msg)) return;
+  try {
+    const res = await api(`/api/cases/${encodeURIComponent(idCard)}`, { method: "DELETE" });
+    alert(`已成功刪除個案 ${name}\n\n刪除檢測紀錄：${res.deleted_measurements || 0} 筆`);
+    // 重新整理相關畫面
+    if (typeof loadCases === "function") loadCases();
+    closeCase();
+    if (typeof loadRecords === "function") loadRecords();
+    if (typeof loadDashboard === "function") loadDashboard();
+  } catch (e) {
+    alert("刪除失敗：" + (e.message || String(e)));
+  }
+}
+
+async function deleteExercise(id) {
+  if (!confirm("確定刪除此筆運動紀錄？")) return;
+  try {
+    await api(`/api/exercises/${id}`, { method: "DELETE" });
+    loadExercises();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function migrateExerciseFromMeasurements() {
+  if (!confirm("將檢測紀錄中「只有運動、沒有體適能數值」的資料移到運動輔具專區？")) return;
+  const msg = document.getElementById("exMsg");
+  try {
+    if (msg) msg.innerHTML = '<div class="alert alert-info">處理中…</div>';
+    const data = await api("/api/exercises/migrate-from-measurements", { method: "POST" });
+    if (msg) msg.innerHTML = `<div class="alert alert-success">已移動 <strong>${data.moved || 0}</strong> 筆到運動輔具專區</div>`;
+    loadExercises();
+    if (typeof loadRecords === "function") loadRecords();
+    if (typeof loadStats === "function") loadStats();
+  } catch (e) {
+    if (msg) msg.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+    else alert(e.message);
+  }
+}
+
+let currentSuggestedRetest = null;
+
+async function openCase(idCard) {
+  currentCaseId = idCard;
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(idCard)}`);
+    const p = data.profile;
+    const latest = data.latest;
+    const panel = document.getElementById("casePanel");
+    if (!panel) { alert("找不到個案面板"); return; }
+    panel.style.display = "block";
+    const masked = (p.id_card || "").length >= 6 ? (p.id_card.slice(0,6) + "****") : (p.id_card || "");
+    const av = document.getElementById("caseAvatar");
+    if (av) av.textContent = (p.user_name || "長").slice(0,1);
+    const nameEl = document.getElementById("caseName");
+    if (nameEl) nameEl.innerHTML = `${p.user_name} <span class="text-primary fs-6">${masked}</span> ${stageBadge(latest.sarcopenia_stage)}`;
+    const metaEl = document.getElementById("caseMeta");
+    if (metaEl) metaEl.innerHTML =
+      `${p.gender === "M" ? "男性" : "女性"} · ${p.age || "-"} 歲 · 身高 ${p.height || "-"} cm · 體重 ${p.weight || "-"} kg · BMI: ${p.bmi || "-"} · <span class="text-primary">最新檢測：${latest.measure_time || "-"}</span>`;
+    const cnt = document.getElementById("caseCountBadge");
+    if (cnt) cnt.textContent = `累計量測紀錄：${data.total_records || 0} 次`;
+    const tag = document.getElementById("caseChartTag");
+    if (tag) tag.textContent = `個案：${p.user_name}（${masked}）`;
+    document.getElementById("btnPrintReport").onclick = () => {
+      openCaseReport(true);
+    };
+
+    const isMale = p.gender === "M";
+    const sex = isMale ? "男" : "女";
+    const metrics = [
+      { icon:"💪", label: "握力測量", val: latest.grip_strength, unit: "kg", hint: `${sex} ≥ ${isMale ? 28 : 18} kg`, std: isMale ? 28 : 18, higherBetter: true },
+      { icon:"↑", label: "五次坐站", val: latest.chair_stand_time, unit: "秒", hint: "標準值：< 12 秒", std: 12, higherBetter: false },
+      { icon:"🚶", label: "走路時間", val: latest.walking_time, unit: "秒", hint: "標準值：< 20 秒", std: 20, higherBetter: false },
+      { icon:"🦴", label: "骨骼肌量 SMI", val: latest.smi, unit: "kg/m²", hint: `${sex} ≥ ${isMale ? 7.0 : 5.7} kg/m²`, std: isMale ? 7.0 : 5.7, higherBetter: true },
+      { icon:"❤", label: "血壓（收縮/舒張）", val: latest.systolic ? `${latest.systolic} / ${latest.diastolic || "-"}` : null, unit: "mmHg", hint: "標準: 120/80 mmHg", note: latest.systolic && latest.systolic < 140 ? "血壓正常平穩" : (latest.systolic ? "血壓偏高" : "") },
+      { icon:"♡", label: "心率脈搏", val: latest.pulse, unit: "bpm", hint: "安靜心率: 60~100 bpm", note: latest.pulse && latest.pulse >= 60 && latest.pulse <= 100 ? "正常安靜心率" : "" },
+      { icon:"●", label: "體脂率", val: latest.body_fat, unit: "%", hint: isMale ? "男 10~20%" : "女 23~36.9%" },
+      { icon:"▢", label: "體位 BMI", val: latest.bmi, unit: "", hint: "衛福部: 18.5 ~ 24.0", note: latest.bmi && latest.bmi >= 18.5 && latest.bmi < 24 ? "標準體位" : "" },
+    ];
+    const box = document.getElementById("caseMetrics");
+    box.innerHTML = metrics.map((m) => {
+      let note = m.note || "";
+      if (m.std != null && m.val != null && !note) {
+        const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
+        note = pass ? "達標" : "未達標";
+      }
+      const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
+      return `<div class="col-6 col-md-3"><div class="photo-metric">
+        <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
+        <div class="val">${m.val != null ? m.val : "-"} <small class="fs-6 text-muted fw-normal">${m.unit || ""}</small></div>
+        ${noteHtml}
+      </div></div>`;
+    }).join("");
+
+    
+    
+    // 前後測比較（後測區）
+    let progBox = document.getElementById("caseProgressBox");
+    if (!progBox) {
+      progBox = document.createElement("div");
+      progBox.id = "caseProgressBox";
+      progBox.className = "mt-3 mb-3";
+      const metricsEl = document.getElementById("caseMetrics");
+      if (metricsEl && metricsEl.parentNode) {
+        metricsEl.parentNode.insertBefore(progBox, metricsEl.nextSibling);
+      }
+    }
+    const prog = data.progress;
+    if (prog && prog.available) {
+      const rows = (prog.metrics || []).map((m) => {
+        let badge = '<span class="badge bg-secondary">—</span>';
+        if (m.status === "進步") badge = '<span class="badge bg-success">進步</span>';
+        else if (m.status === "退步") badge = '<span class="badge bg-danger">退步</span>';
+        else if (m.status === "持平") badge = '<span class="badge bg-warning text-dark">持平</span>';
+        const d = m.delta == null ? "-" : (m.delta > 0 ? "+" + m.delta : String(m.delta));
+        return `<tr>
+          <td class="small">${m.label}</td>
+          <td class="small">${m.before != null ? m.before : "-"}</td>
+          <td class="small fw-semibold">${m.after != null ? m.after : "-"}</td>
+          <td class="small">${d}</td>
+          <td>${badge}</td>
+        </tr>`;
+      }).join("");
+      const st = prog.stage || {};
+      let stBadge = '<span class="badge bg-secondary">—</span>';
+      if (st.status === "進步") stBadge = '<span class="badge bg-success">進步</span>';
+      else if (st.status === "退步") stBadge = '<span class="badge bg-danger">退步</span>';
+      else if (st.status === "持平") stBadge = '<span class="badge bg-warning text-dark">持平</span>';
+      const ex = prog.exercise || {};
+      const typeLines = Object.keys(ex.by_type || {}).map((k) => `${k} ${ex.by_type[k]} 次`).join("、") || "無";
+      const exRows = (ex.items || []).slice(-8).reverse().map((it) =>
+        `<tr>
+          <td class="small">${it.date || "-"}</td>
+          <td class="small">${it.machine_name || it.type || "-"}</td>
+          <td class="small">${it.duration_sec != null ? Math.round(it.duration_sec / 60 * 10) / 10 + " 分" : "-"}</td>
+          <td class="small">${it.calories != null ? it.calories : "-"}</td>
+        </tr>`
+      ).join("");
+      progBox.innerHTML = `
+        <div class="card border-primary border-opacity-25 shadow-sm">
+          <div class="card-header bg-primary bg-opacity-10 py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
+            <span class="fw-bold"><i class="bi bi-clipboard2-data me-1"></i>前後測比較（後測區）</span>
+            <span class="small text-muted">${prog.pre?.measure_date || "-"} → ${prog.post?.measure_date || "-"}</span>
+          </div>
+          <div class="card-body">
+            <p class="small mb-3">${prog.summary_text || ""}</p>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-3">
+                <thead class="table-light">
+                  <tr><th>項目</th><th>前測</th><th>後測</th><th>變化</th><th>結果</th></tr>
+                </thead>
+                <tbody>
+                  ${rows}
+                  <tr>
+                    <td class="small">肌少症分期</td>
+                    <td class="small">${st.before || "-"}</td>
+                    <td class="small fw-semibold">${st.after || "-"}</td>
+                    <td class="small">—</td>
+                    <td>${stBadge}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="rounded p-3 mb-2" style="background:#f0f9ff">
+              <div class="fw-semibold small mb-1"><i class="bi bi-bicycle me-1"></i>期間運動（前測日至後測日）</div>
+              <div class="small">共 <b>${ex.sessions || 0}</b> 次 · 約 <b>${ex.total_duration_min || 0}</b> 分鐘 · 熱量 <b>${ex.total_calories || 0}</b> kcal</div>
+              <div class="small text-muted">類型：${typeLines}</div>
+            </div>
+            ${exRows ? `<div class="table-responsive"><table class="table table-sm mb-0">
+              <thead class="table-light"><tr><th>日期</th><th>器材／類型</th><th>時數</th><th>kcal</th></tr></thead>
+              <tbody>${exRows}</tbody></table></div>` : '<div class="small text-muted">此區間尚無運動輔具上傳紀錄。</div>'}
+          </div>
+        </div>`;
+      progBox.style.display = "block";
+    } else {
+      progBox.innerHTML = `
+        <div class="alert alert-light border small mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          <b>前後測比較</b>：${(prog && prog.reason) ? prog.reason : "至少需要 2 筆檢測（前測＋後測）才會顯示進步分析。"}
+        </div>`;
+      progBox.style.display = "block";
     }
 
-
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-    db = next(get_db())
-    try:
-        keep = {"bonnie", "chrisavicii", "littlethanks", "Netown", "netown", "nurse1", "care1"}
-        for old in db.query(User).all():
-            if old.username not in keep:
-                db.delete(old)
-        db.commit()
-
-        defaults = [
-            ("bonnie", "Aa960723", "Bonnie (系統管理員)", "superadmin", "Bonnie960723@gmail.com"),
-            ("chrisavicii", "Aa0965652118", "Chris (超級管理員)", "superadmin", "chrisw516jn@gmail.com"),
-            ("littlethanks", "Aa0610", "館管理員", "admin", None),
-            ("Netown", "Aa0225991228", "Netown (管理員)", "admin", None),
-            ("nurse1", "Nurse1234", "護理師小美", "nurse", None),
-            ("care1", "Care1234", "照顧服務員小華", "caregiver", None),
-        ]
-        for username, pwd, display, role, email in defaults:
-            existing = get_user_by_username(db, username)
-            if existing:
-                existing.hashed_password = get_password_hash(pwd)
-                existing.display_name = display
-                existing.role = role
-                existing.email = email
-                existing.is_active = True
-            else:
-                db.add(User(
-                    username=username,
-                    hashed_password=get_password_hash(pwd),
-                    display_name=display,
-                    role=role,
-                    email=email,
-                    is_active=True,
-                ))
-        db.commit()
-
-        if not db.query(SystemConfig).filter(SystemConfig.key == "thresholds").first():
-            db.add(SystemConfig(key="thresholds", value=json.dumps(DEFAULT_THRESHOLDS), updated_by="system"))
-            db.commit()
-        # 啟動時若超過 24 小時未健檢則自動執行
-        try:
-            maybe_daily_self_heal(db)
-        except Exception:
-            pass
-    finally:
-        db.close()
-
-
-def _norm_id(v) -> str:
-    return str(v or "").strip().upper()
-
-
-def _fp_key(id_card, measure_time, grip, chair, walk, smi, systolic=None):
-    mt = str(measure_time or "")[:16]
-
-    def r(x, n=1):
-        if x is None or x == "":
-            return None
-        try:
-            return round(float(x), n)
-        except Exception:
-            return None
-
-    return (
-        _norm_id(id_card),
-        mt,
-        r(grip),
-        r(chair, 2),
-        r(walk, 2),
-        r(smi, 1),
-        r(systolic, 0),
-    )
-
-
-def purge_duplicate_measurements(db: Session) -> tuple:
-    """
-    刪除重複檢測：
-    1) 同一身分證 + 完全相同檢測時間 → 只留一筆（較早 id）
-    2) 同一身分證 + 同一天 + 數值指紋相同 → 只留一筆
-    3) 同一身分證 + 同一天（多筆）→ 只留檢測時間最新的一筆
-       （與列表「隱藏同日舊筆」規則一致，會真正從資料庫刪除）
-    """
-    rows = db.query(Measurement).order_by(Measurement.id.asc()).all()
-    seen_time = {}
-    seen_fp = {}
-    by_day = {}  # (id_card, date) -> list of rec
-    to_delete_ids = set()
-    id_to_rec = {}
-
-    for rec in rows:
-        id_to_rec[rec.id] = rec
-        card = _norm_id(rec.id_card)
-        day = str(rec.measure_date or "")[:10] or str(rec.measure_time or "")[:10]
-        tkey = (card, rec.measure_time or "")
-        # 指紋改為「同一天」為單位，不綁死到秒，避免重匯入只差幾秒就刪不掉
-        fkey = (
-            card,
-            day,
-            _fp_key(
-                rec.id_card, day,  # 用日期代替精確時間
-                rec.grip_strength, rec.chair_stand_time, rec.walking_time,
-                rec.smi, rec.systolic,
-            )[2:],
-        )
-
-        if tkey in seen_time:
-            to_delete_ids.add(rec.id)
-        else:
-            seen_time[tkey] = rec.id
-
-        if fkey in seen_fp:
-            to_delete_ids.add(rec.id)
-        else:
-            seen_fp[fkey] = rec.id
-
-        by_day.setdefault((card, day), []).append(rec)
-
-    # 同一人同一天：只留 measure_time 最新者
-    for key, group in by_day.items():
-        if len(group) <= 1:
-            continue
-        group_sorted = sorted(
-            group,
-            key=lambda r: (str(r.measure_time or ""), r.id or 0),
-            reverse=True,
-        )
-        keep_id = group_sorted[0].id
-        for r in group_sorted[1:]:
-            to_delete_ids.add(r.id)
-        # 確保最新那筆不會被前面規則誤刪
-        to_delete_ids.discard(keep_id)
-
-    names = []
-    for rid in sorted(to_delete_ids):
-        rec = id_to_rec.get(rid)
-        if not rec:
-            continue
-        names.append(f"{rec.user_name}/{rec.id_card} @ {rec.measure_time}")
-        db.delete(rec)
-    if to_delete_ids:
-        db.commit()
-    return len(to_delete_ids), names[:40]
-
-
-def add_audit(db: Session, operator: str, action: str, details: str = ""):
-    db.add(AuditLog(operator=operator, action=action, details=details))
-    db.commit()
-
-
-def create_abnormal_alert(db: Session, rec: Measurement):
-    """
-    建立或更新異常通報。
-    Netown 常分次上傳（血壓→握力→體脂），每次都新建會變成同一人多則通報；
-    改為：同一身分證 + 尚未關懷 → 優先更新同一則，避免洗版。
-    """
-    if not rec:
-        return None
-    stage = rec.sarcopenia_stage or "正常"
-    abn = rec.abnormal_count or 0
-    if abn <= 0 and stage == "正常":
-        return None
-
-    if stage == "嚴重肌少症" or abn >= 3:
-        severity = "critical"
-        title = f"【緊急】{rec.user_name} 身體數據多重異常"
-        advice = "建議：盡快關懷，必要時轉介醫療或安排兩週內複測。"
-    elif stage in ("肌少症", "肌少症前期") or abn >= 1:
-        severity = "warning"
-        title = f"【注意】{rec.user_name} 檢測異常需關懷"
-        advice = "建議：電話或現場關心，並記錄關懷追蹤；可安排 2～4 週複測。"
-    else:
-        severity = "info"
-        title = f"【提醒】{rec.user_name} 指標需追蹤"
-        advice = "建議：持續觀察，下次檢測時比對趨勢。"
-
-    message = format_alert_message(rec) + "\n" + advice
-    day = str(rec.measure_date or "")[:10] or str(rec.measure_time or "")[:10]
-    severity_rank = {"info": 1, "warning": 2, "critical": 3}
-
-    # 同一人未關懷通報：同 measurement 或同日 → 更新
-    existing = None
-    try:
-        candidates = (
-            db.query(Alert)
-            .filter(Alert.id_card == rec.id_card, Alert.is_handled == False)  # noqa: E712
-            .order_by(Alert.id.desc())
-            .limit(30)
-            .all()
-        )
-        for a in candidates:
-            if a.measurement_id == rec.id:
-                existing = a
-                break
-        if existing is None:
-            for a in candidates:
-                if day and day in (a.message or ""):
-                    existing = a
-                    break
-        if existing is None and candidates:
-            # 同人短時間內未關懷：合併到最新一則
-            existing = candidates[0]
-    except Exception:
-        existing = None
-
-    should_line = True
-    if existing:
-        old_rank = severity_rank.get(existing.severity or "", 0)
-        new_rank = severity_rank.get(severity, 0)
-        should_line = new_rank > old_rank
-        existing.measurement_id = rec.id
-        existing.user_name = rec.user_name
-        if new_rank >= old_rank:
-            existing.severity = severity
-            existing.title = title
-        existing.message = message
-        existing.sarcopenia_stage = stage
-        existing.abnormal_count = abn
-        existing.is_read = False
-        db.commit()
-        db.refresh(existing)
-        alert = existing
-        try:
-            for ex in candidates:
-                if ex.id == existing.id:
-                    continue
-                if ex.measurement_id == rec.id or (day and day in (ex.message or "")):
-                    ex.is_handled = True
-                    ex.handled_by = "system"
-                    ex.handle_note = "同日合併通報，已自動結案"
-            db.commit()
-        except Exception:
-            pass
-    else:
-        alert = Alert(
-            measurement_id=rec.id,
-            id_card=rec.id_card,
-            user_name=rec.user_name,
-            severity=severity,
-            title=title,
-            message=message,
-            sarcopenia_stage=stage,
-            abnormal_count=abn,
-            target_roles="nurse,caregiver,superadmin,admin",
-        )
-        db.add(alert)
-        db.commit()
-        db.refresh(alert)
-
-    if should_line:
-        try:
-            send_line_text(message)
-        except Exception:
-            pass
-    return alert
-
-
-# ========== 防暴力破解（登入限速）==========
-# 同一帳號或同一 IP 短時間內多次失敗會暫時鎖定
-_login_fail_store: dict = {}  # key -> {"fails": int, "first": ts, "lock_until": ts}
-_LOGIN_MAX_FAILS = 5          # 允許失敗次數
-_LOGIN_WINDOW_SEC = 15 * 60   # 統計視窗 15 分鐘
-_LOGIN_LOCK_SEC = 15 * 60     # 鎖定 15 分鐘
-_LOGIN_IP_MAX = 30            # 同一 IP 15 分鐘內最多嘗試次數（含成功前的失敗）
-
-
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    real = request.headers.get("x-real-ip") or request.headers.get("X-Real-IP")
-    if real:
-        return real.strip()[:64]
-    if request.client:
-        return (request.client.host or "unknown")[:64]
-    return "unknown"
-
-
-def _login_guard_check(username: str, ip: str) -> Optional[str]:
-    """若應封鎖則回傳錯誤訊息，否則 None。"""
-    now = datetime.now().timestamp()
-    # 清掉過期資料
-    dead = [k for k, v in _login_fail_store.items() if v.get("lock_until", 0) < now and now - v.get("first", 0) > _LOGIN_WINDOW_SEC]
-    for k in dead:
-        _login_fail_store.pop(k, None)
-
-    for key in (f"user:{username.lower()}", f"ip:{ip}"):
-        rec = _login_fail_store.get(key)
-        if not rec:
-            continue
-        lock_until = rec.get("lock_until") or 0
-        if lock_until > now:
-            remain = int(lock_until - now)
-            mins = max(1, (remain + 59) // 60)
-            return f"嘗試次數過多，請約 {mins} 分鐘後再試"
-        # 視窗外則重置
-        if now - rec.get("first", 0) > _LOGIN_WINDOW_SEC:
-            _login_fail_store.pop(key, None)
-    return None
-
-
-def _login_guard_fail(username: str, ip: str):
-    now = datetime.now().timestamp()
-    for key, limit in ((f"user:{username.lower()}", _LOGIN_MAX_FAILS), (f"ip:{ip}", _LOGIN_IP_MAX)):
-        rec = _login_fail_store.get(key)
-        if not rec or now - rec.get("first", 0) > _LOGIN_WINDOW_SEC:
-            rec = {"fails": 0, "first": now, "lock_until": 0}
-        rec["fails"] = int(rec.get("fails", 0)) + 1
-        if rec["fails"] >= limit:
-            rec["lock_until"] = now + _LOGIN_LOCK_SEC
-        _login_fail_store[key] = rec
-
-
-def _login_guard_success(username: str, ip: str):
-    _login_fail_store.pop(f"user:{username.lower()}", None)
-    # IP 不完全清掉，避免換帳號狂試；只在成功時略減
-    rec = _login_fail_store.get(f"ip:{ip}")
-    if rec:
-        rec["fails"] = max(0, int(rec.get("fails", 0)) - 2)
-        if rec["fails"] == 0:
-            _login_fail_store.pop(f"ip:{ip}", None)
-        else:
-            _login_fail_store[f"ip:{ip}"] = rec
-
-
-# ========== Auth ==========
-@app.post("/api/auth/register", response_model=UserOut, tags=["Auth"])
-def register(payload: UserCreate, db: Session = Depends(get_db)):
-    raise HTTPException(403, "公開註冊已關閉，請使用管理員帳號登入")
-
-
-@app.post("/api/auth/login", response_model=Token, tags=["Auth"])
-def login(
-    request: Request,
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: Session = Depends(get_db),
-):
-    username = (form_data.username or "").strip()
-    password = (form_data.password or "").strip()
-    ip = _client_ip(request)
-
-    blocked = _login_guard_check(username or "?", ip)
-    if blocked:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, blocked)
-
-    user = get_user_by_username(db, username)
-    if not user or not verify_password(password, user.hashed_password):
-        _login_guard_fail(username or "?", ip)
-        # 故意不區分「帳號不存在／密碼錯」，避免被枚舉帳號
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "帳號或密碼錯誤")
-    if not user.is_active:
-        raise HTTPException(403, "帳號已停用")
-
-    _login_guard_success(user.username, ip)
-    token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    )
-    add_audit(db, user.username, "login", f"登入成功 ip={ip}")
-    return Token(access_token=token, user=UserOut.model_validate(user))
-
-
-@app.get("/api/auth/me", response_model=UserOut, tags=["Auth"])
-def me(current_user: User = Depends(get_current_user)):
-    return current_user
-
-
-# ========== Users 帳號管理 ==========
-@app.get("/api/users", tags=["Users"])
-def list_users(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    users = db.query(User).order_by(User.id.asc()).all()
-    return [UserOut.model_validate(u) for u in users]
-
-
-@app.post("/api/users", response_model=UserOut, tags=["Users"])
-def create_user(
-    payload: UserCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    if get_user_by_username(db, payload.username):
-        raise HTTPException(400, "帳號已存在")
-    allowed_roles = {"superadmin", "admin", "nurse", "caregiver", "staff", "viewer"}
-    if payload.role not in allowed_roles:
-        raise HTTPException(400, f"角色必須是：{', '.join(sorted(allowed_roles))}")
-    if current_user.role != "superadmin" and payload.role in ("superadmin",):
-        raise HTTPException(403, "只有超級管理員可建立超級管理員")
-    user = User(
-        username=payload.username.strip(),
-        hashed_password=get_password_hash(payload.password),
-        display_name=payload.display_name,
-        email=payload.email,
-        role=payload.role,
-        is_active=True,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-    add_audit(db, current_user.username, "create_user", f"{user.username} role={user.role}")
-    return user
-
-
-@app.patch("/api/users/{user_id}", response_model=UserOut, tags=["Users"])
-def update_user(
-    user_id: int,
-    payload: UserUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    user = db.query(User).get(user_id)
-    if not user:
-        raise HTTPException(404, "找不到帳號")
-    if payload.display_name is not None:
-        user.display_name = payload.display_name
-    if payload.email is not None:
-        user.email = payload.email
-    if payload.role is not None:
-        if current_user.role != "superadmin" and payload.role == "superadmin":
-            raise HTTPException(403, "只有超級管理員可指定超級管理員")
-        user.role = payload.role
-    if payload.is_active is not None:
-        if user.username == current_user.username and not payload.is_active:
-            raise HTTPException(400, "不能停用自己的帳號")
-        user.is_active = payload.is_active
-    if payload.password:
-        user.hashed_password = get_password_hash(payload.password)
-    db.commit()
-    db.refresh(user)
-    add_audit(db, current_user.username, "update_user", f"{user.username}")
-    return user
-
-
-# ========== Measurements ==========
-def _netown_msg(code: str, http_status: int = 200):
-    return JSONResponse(status_code=http_status, content={"MessageCode": str(code)})
-
-
-def _apply_netown_fields(rec: Measurement, fields: dict):
-    """把 Netown 解析出的欄位寫入既有/新建 Measurement。"""
-    mapping = [
-        "height", "weight", "bmi", "body_fat", "smi",
-        "systolic", "diastolic", "pulse",
-        "grip_strength", "chair_stand_time", "walking_time",
-    ]
-    for k in mapping:
-        if k in fields and fields[k] is not None:
-            setattr(rec, k, fields[k])
-
-
-def _recalc_measurement(db: Session, rec: Measurement):
-    if (rec.bmi is None or rec.bmi == 0) and rec.height and rec.weight:
-        rec.bmi = calc_bmi(rec.height, rec.weight)
-    stage, abn_count, status_text = judge_sarcopenia(
-        rec.gender, rec.grip_strength, rec.chair_stand_time,
-        rec.walking_time, rec.smi, age=rec.age,
-    )
-    th = get_thresholds(db)
-    if rec.systolic and rec.systolic >= int(th.get("systolic_high", 140)):
-        if status_text == "各項指標正常":
-            status_text = f"血壓偏高 ({rec.systolic}/{rec.diastolic or '?'})"
-        else:
-            status_text += f" / 血壓偏高 ({rec.systolic}/{rec.diastolic or '?'})"
-        abn_count += 1
-    rec.sarcopenia_stage = stage
-    rec.abnormal_count = abn_count
-    rec.status = status_text
-
-
-def handle_netown_upload(body: dict, db: Session, headers: dict) -> JSONResponse:
-    """處理 NETOWN API v2.4 設備上傳。"""
-    try:
-        from netown import is_netown_payload, parse_netown, netown_api_key_ok
-    except Exception as e:
-        return _netown_msg("500", 500)
-
-    if not netown_api_key_ok(dict(headers)):
-        return _netown_msg("401", 401)
-
-    try:
-        parsed = parse_netown(body)
-    except ValueError:
-        return _netown_msg("400", 400)
-    except Exception:
-        return _netown_msg("500", 500)
-
-    id_card = parsed["id_card"]
-    measure_date = parsed["measure_date"]
-    measure_time = parsed["measure_time"]
-    typ = parsed["type"]
-    machine = parsed.get("machine_number") or ""
-
-    try:
-        # ----- 運動輔具：寫入 exercise_logs，不占用檢測紀錄 -----
-        if not parsed.get("is_vital") and typ in (
-            "ResistanceExercise", "AerobicExercise", "GripTraining"
-        ):
-            if ExerciseLog is None:
-                return _netown_msg("500", 500)
-            prev = (
-                db.query(Measurement)
-                .filter(Measurement.id_card == id_card)
-                .order_by(Measurement.measure_time.desc())
-                .first()
-            )
-            ex = parsed.get("exercise") or {}
-            log = ExerciseLog(
-                id_card=id_card,
-                user_name=(prev.user_name if prev else id_card),
-                gender=(prev.gender if prev and prev.gender else None),
-                exercise_type=typ,
-                machine_code=ex.get("machine_code"),
-                machine_name=ex.get("machine_name"),
-                duration_sec=ex.get("duration_sec"),
-                reps=ex.get("reps"),
-                calories=ex.get("calories"),
-                distance_km=ex.get("distance_km"),
-                achievement_rate=ex.get("achievement_rate"),
-                extra=ex.get("extra"),
-                summary=(parsed.get("exercise_summary") or "")[:500],
-                measure_date=measure_date,
-                measure_time=measure_time,
-                machine_number=machine,
-                source="netown",
-            )
-            db.add(log)
-            db.commit()
-            add_audit(
-                db,
-                f"netown:{machine}"[:50],
-                "netown_exercise",
-                f"{id_card} type={typ} time={measure_time}",
-            )
-            return _netown_msg("200", 200)
-
-        # ----- 體適能量測：同日合併寫入 measurements -----
-        rec = (
-            db.query(Measurement)
-            .filter(Measurement.id_card == id_card, Measurement.measure_date == measure_date)
-            .order_by(Measurement.measure_time.desc())
-            .first()
-        )
-        if not rec:
-            prev = (
-                db.query(Measurement)
-                .filter(Measurement.id_card == id_card)
-                .order_by(Measurement.measure_time.desc())
-                .first()
-            )
-            rec = Measurement(
-                id_card=id_card,
-                user_name=(prev.user_name if prev else id_card),
-                gender=(prev.gender if prev and prev.gender else "M"),
-                age=(prev.age if prev else None),
-                measure_date=measure_date,
-                measure_time=measure_time,
-                source="netown",
-                created_by=f"netown:{machine}"[:50],
-            )
-            db.add(rec)
-            db.flush()
-        else:
-            if measure_time > (rec.measure_time or ""):
-                rec.measure_time = measure_time
-
-        if parsed.get("is_vital") and parsed.get("fields"):
-            _apply_netown_fields(rec, parsed["fields"])
-            _recalc_measurement(db, rec)
-
-        summary = parsed.get("exercise_summary") or ""
-        if summary and parsed.get("is_vital"):
-            extra = f"[Netown/{typ}] {summary}"
-            if rec.status and extra not in (rec.status or ""):
-                rec.status = ((rec.status or "") + " | " + extra)[:500]
-            elif not rec.status:
-                rec.status = extra[:500]
-
-        db.commit()
-        db.refresh(rec)
-
-        if parsed.get("is_vital"):
-            try:
-                create_abnormal_alert(db, rec)
-            except Exception:
-                pass
-
-        add_audit(
-            db,
-            f"netown:{machine}"[:50],
-            "netown_upload",
-            f"{id_card} type={typ} time={measure_time}",
-        )
-        return _netown_msg("200", 200)
-    except Exception as e:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        return _netown_msg("500", 500)
-
-
-@app.post("/api/measurements", tags=["Measurements"])
-async def create_measurement(
-    request: Request,
-    db: Session = Depends(get_db),
-):
-    """
-    雙格式：
-    1) NETOWN 設備：{ID, MachineNumber, Version, Type, MeasureTime, Values}
-       → 回傳 {MessageCode: 200/400/401/500}，不需登入
-    2) 系統內部：MeasurementCreate JSON + Bearer Token
-       → 回傳 MeasurementOut
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        # 非 JSON：若像 Netown 則 400，否則 422
-        return _netown_msg("400", 400)
-
-    try:
-        from netown import is_netown_payload
-        netown_shape = is_netown_payload(body)
-    except Exception:
-        netown_shape = False
-
-    if netown_shape:
-        return handle_netown_upload(body, db, request.headers)
-
-    # ----- 內部 API（需登入）-----
-    auth = request.headers.get("authorization") or request.headers.get("Authorization") or ""
-    if not auth.lower().startswith("bearer "):
-        raise HTTPException(401, "需要登入")
-    token = auth[7:].strip()
-    current_user = None
-    try:
-        from jose import jwt as jose_jwt
-        from auth import SECRET_KEY, ALGORITHM
-        payload_tok = jose_jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username = payload_tok.get("sub")
-        current_user = get_user_by_username(db, username) if username else None
-    except Exception:
-        current_user = None
-    if current_user is None or not getattr(current_user, "is_active", True):
-        raise HTTPException(401, "登入已過期或無效")
-
-    try:
-        payload = MeasurementCreate(**body)
-    except Exception as e:
-        raise HTTPException(422, f"欄位錯誤：{e}")
-
-    measure_date, measure_time = normalize_measure_time(payload.measure_time)
-    exists = db.query(Measurement).filter(
-        Measurement.id_card == payload.id_card,
-        Measurement.measure_time == measure_time,
-    ).first()
-    if exists:
-        raise HTTPException(409, "同一身分證於同一時間點已有紀錄，已略過")
-
-    bmi = calc_bmi(payload.height, payload.weight) or payload.bmi
-    stage, abn_count, status_text = judge_sarcopenia(
-        payload.gender, payload.grip_strength, payload.chair_stand_time,
-        payload.walking_time, payload.smi, age=payload.age
-    )
-    th = get_thresholds(db)
-    if payload.systolic and payload.systolic >= int(th.get("systolic_high", 140)):
-        if status_text == "各項指標正常":
-            status_text = f"血壓偏高 ({payload.systolic}/{payload.diastolic or '?'})"
-        else:
-            status_text += f" / 血壓偏高 ({payload.systolic}/{payload.diastolic or '?'})"
-        abn_count += 1
-
-    rec = Measurement(
-        id_card=payload.id_card,
-        user_name=payload.user_name,
-        gender=payload.gender,
-        age=payload.age,
-        height=payload.height,
-        weight=payload.weight,
-        bmi=bmi,
-        body_fat=payload.body_fat,
-        smi=payload.smi,
-        systolic=payload.systolic,
-        diastolic=payload.diastolic,
-        pulse=payload.pulse,
-        grip_strength=payload.grip_strength,
-        chair_stand_time=payload.chair_stand_time,
-        walking_time=payload.walking_time,
-        sarcopenia_stage=stage,
-        abnormal_count=abn_count,
-        status=status_text,
-        measure_date=measure_date,
-        measure_time=measure_time,
-        source="api",
-        created_by=current_user.username,
-    )
-    db.add(rec)
-    db.commit()
-    db.refresh(rec)
-    create_abnormal_alert(db, rec)
-    add_audit(db, current_user.username, "create_measurement", f"{payload.id_card} {measure_time}")
-    return rec
-
-
-@app.post("/api/netown", tags=["Netown"])
-async def netown_endpoint(request: Request, db: Session = Depends(get_db)):
-    """NETOWN 專用別名（與 /api/measurements 相同邏輯）。"""
-    try:
-        body = await request.json()
-    except Exception:
-        return _netown_msg("400", 400)
-    return handle_netown_upload(body, db, request.headers)
-
-
-def _same_day_latest_ids(db: Session) -> set:
-    """同一身分證同一天只保留時間最新的一筆。"""
-    rows = db.query(
-        Measurement.id, Measurement.id_card, Measurement.measure_date, Measurement.measure_time
-    ).all()
-    latest = {}
-    for rid, card, day, mt in rows:
-        key = (str(card or "").strip().upper(), str(day or ""))
-        cur = str(mt or "")
-        if key not in latest or cur > str(latest[key][1]):
-            latest[key] = (rid, cur)
-    return {v[0] for v in latest.values()}
-
-
-@app.get("/api/measurements", tags=["Measurements"])
-def list_measurements(
-    q: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    stage: Optional[str] = None,
-    gender: Optional[str] = None,
-    abnormal_only: bool = False,
-    include_duplicates: bool = False,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    query = db.query(Measurement)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            Measurement.id_card.ilike(like),
-            Measurement.user_name.ilike(like),
-            Measurement.sarcopenia_stage.ilike(like),
-        ))
-    if start_date:
-        query = query.filter(Measurement.measure_date >= start_date)
-    if end_date:
-        query = query.filter(Measurement.measure_date <= end_date)
-    if stage:
-        query = query.filter(Measurement.sarcopenia_stage == stage)
-    if gender:
-        g = "M" if gender.upper() in ("M", "男") else "F"
-        query = query.filter(Measurement.gender == g)
-    if abnormal_only:
-        query = query.filter(or_(Measurement.abnormal_count > 0, Measurement.sarcopenia_stage != "正常"))
-    if not include_duplicates:
-        keep = _same_day_latest_ids(db)
-        if keep:
-            query = query.filter(Measurement.id.in_(keep))
-
-    total = query.count()
-    items = (
-        query.order_by(Measurement.measure_time.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [MeasurementOut.model_validate(i) for i in items],
-    }
-
-
-@app.get("/api/duplicates", tags=["Measurements"])
-def list_duplicates(
-    q: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """同一天被較新資料取代的舊筆，可在重複專區查詢。"""
-    keep = _same_day_latest_ids(db)
-    query = db.query(Measurement)
-    if keep:
-        query = query.filter(~Measurement.id.in_(keep))
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            Measurement.id_card.ilike(like),
-            Measurement.user_name.ilike(like),
-        ))
-    total = query.count()
-    items = (
-        query.order_by(Measurement.measure_time.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [MeasurementOut.model_validate(i) for i in items],
-    }
-
-
-@app.get("/api/measurements/{record_id}", response_model=MeasurementOut, tags=["Measurements"])
-def get_measurement(
-    record_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    rec = db.query(Measurement).get(record_id)
-    if not rec:
-        raise HTTPException(404, "找不到紀錄")
-    return rec
-
-
-@app.delete("/api/measurements/{record_id}", tags=["Measurements"])
-def delete_measurement(
-    record_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
-):
-    rec = db.query(Measurement).get(record_id)
-    if not rec:
-        raise HTTPException(404, "找不到紀錄")
-    db.delete(rec)
-    db.commit()
-    add_audit(db, current_user.username, "delete_measurement", f"id={record_id}")
-    return {"ok": True}
-
-
-@app.delete("/api/cases/{id_card}", tags=["Cases"])
-def delete_case(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
-):
-    """刪除此個案的全部資料（檢測紀錄、異常通報、運動紀錄、客製輔具等）。"""
-    id_card = (id_card or "").strip()
-    if not id_card:
-        raise HTTPException(400, "缺少身分證")
-
-    # 刪除檢測紀錄
-    meas_count = db.query(Measurement).filter(Measurement.id_card == id_card).delete(synchronize_session=False)
-
-    # 刪除異常通報
-    alert_count = 0
-    if "Alert" in globals() and Alert is not None:
-        alert_count = db.query(Alert).filter(Alert.id_card == id_card).delete(synchronize_session=False)
-
-    # 刪除運動紀錄
-    ex_count = 0
-    if "ExerciseLog" in globals() and ExerciseLog is not None:
-        ex_count = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card).delete(synchronize_session=False)
-
-    # 刪除客製輔具
-    eq_count = 0
-    if "CaseEquipmentPlan" in globals() and CaseEquipmentPlan is not None:
-        eq_count = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).delete(synchronize_session=False)
-
-    db.commit()
-    add_audit(db, current_user.username, "delete_case", f"id_card={id_card} meas={meas_count} alerts={alert_count} exercises={ex_count}")
-    return {
-        "ok": True,
-        "id_card": id_card,
-        "deleted_measurements": meas_count,
-        "deleted_alerts": alert_count,
-        "deleted_exercises": ex_count,
-        "deleted_equipment": eq_count,
-    }
-
-
-# ========== 運動輔具紀錄 ==========
-@app.get("/api/exercises", tags=["Exercise"])
-def list_exercises(
-    q: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    exercise_type: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if ExerciseLog is None:
-        return {"total": 0, "page": page, "page_size": page_size, "items": []}
-    query = db.query(ExerciseLog)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            ExerciseLog.id_card.ilike(like),
-            ExerciseLog.user_name.ilike(like),
-            ExerciseLog.machine_name.ilike(like),
-            ExerciseLog.summary.ilike(like),
-        ))
-    if start_date:
-        query = query.filter(ExerciseLog.measure_date >= start_date)
-    if end_date:
-        query = query.filter(ExerciseLog.measure_date <= end_date)
-    if exercise_type:
-        query = query.filter(ExerciseLog.exercise_type == exercise_type)
-    total = query.count()
-    items = (
-        query.order_by(ExerciseLog.measure_time.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    out = []
-    for r in items:
-        out.append({
-            "id": r.id,
-            "id_card": r.id_card,
-            "user_name": r.user_name,
-            "gender": r.gender,
-            "exercise_type": r.exercise_type,
-            "machine_code": r.machine_code,
-            "machine_name": r.machine_name,
-            "duration_sec": r.duration_sec,
-            "reps": r.reps,
-            "calories": r.calories,
-            "distance_km": r.distance_km,
-            "achievement_rate": r.achievement_rate,
-            "summary": r.summary,
-            "measure_date": r.measure_date,
-            "measure_time": r.measure_time,
-            "machine_number": r.machine_number,
-            "source": r.source,
-            "created_at": r.created_at.isoformat() if r.created_at else None,
-        })
-    return {"total": total, "page": page, "page_size": page_size, "items": out}
-
-
-@app.delete("/api/exercises/{log_id}", tags=["Exercise"])
-def delete_exercise(
-    log_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin", "company_admin")),
-):
-    if ExerciseLog is None:
-        raise HTTPException(500, "運動紀錄模組未就緒")
-    row = db.query(ExerciseLog).get(log_id)
-    if not row:
-        raise HTTPException(404, "找不到運動紀錄")
-    db.delete(row)
-    db.commit()
-    add_audit(db, current_user.username, "delete_exercise", f"id={log_id}")
-    return {"ok": True}
-
-
-@app.post("/api/exercises/migrate-from-measurements", tags=["Exercise"])
-def migrate_exercise_from_measurements(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """
-    將誤寫入「檢測紀錄」的純運動輔具資料移到運動專區，並自檢測列表移除。
-    判斷：status 含 ResistanceExercise / AerobicExercise / GripTraining，
-    且握力、坐站、走路、SMI、血壓皆空。
-    """
-    if ExerciseLog is None:
-        raise HTTPException(500, "運動紀錄模組未就緒")
-    rows = db.query(Measurement).all()
-    moved = 0
-    for rec in rows:
-        st = rec.status or ""
-        if not any(k in st for k in ("ResistanceExercise", "AerobicExercise", "GripTraining")):
-            continue
-        has_vital = any([
-            rec.grip_strength is not None,
-            rec.chair_stand_time is not None,
-            rec.walking_time is not None,
-            rec.smi is not None,
-            rec.systolic is not None,
-            rec.body_fat is not None,
-        ])
-        if has_vital:
-            continue
-        # 解析類型
-        typ = "ResistanceExercise"
-        if "AerobicExercise" in st:
-            typ = "AerobicExercise"
-        elif "GripTraining" in st:
-            typ = "GripTraining"
-        # 從摘要抽機名
-        machine_name = None
-        for part in st.split("|"):
-            part = part.strip()
-            if "阻力運動" in part or "有氧運動" in part or "握力訓練" in part:
-                machine_name = part.replace("[Netown/ResistanceExercise]", "").replace(
-                    "[Netown/AerobicExercise]", ""
-                ).replace("[Netown/GripTraining]", "").strip()
-                break
-        log = ExerciseLog(
-            id_card=rec.id_card,
-            user_name=rec.user_name,
-            gender=rec.gender,
-            exercise_type=typ,
-            machine_name=(machine_name or typ)[:80],
-            summary=(st[:500] if st else None),
-            measure_date=rec.measure_date,
-            measure_time=rec.measure_time,
-            source=rec.source or "netown",
-            machine_number=(rec.created_by or "").replace("netown:", "")[:50],
-        )
-        db.add(log)
-        db.delete(rec)
-        moved += 1
-    db.commit()
-    add_audit(db, current_user.username, "migrate_exercise", f"moved={moved}")
-    return {"ok": True, "moved": moved}
-
-
-# ========== Import ==========
-@app.post("/api/import", response_model=ImportResult, tags=["Import"])
-async def import_file(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    filename = (file.filename or "").lower()
-    content = await file.read()
-    rows = []
-    try:
-        if filename.endswith(".csv"):
-            text = content.decode("utf-8-sig")
-            reader = csv.DictReader(io.StringIO(text))
-            rows = list(reader)
-        elif filename.endswith((".xlsx", ".xls")):
-            wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-            ws = wb.active
-            headers = [str(c.value).strip() if c.value is not None else "" for c in next(ws.iter_rows(min_row=1, max_row=1))]
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                d = {}
-                for i, h in enumerate(headers):
-                    if h:
-                        d[h] = row[i] if i < len(row) else None
-                rows.append(d)
-            wb.close()
-        else:
-            raise HTTPException(400, "只支援 .csv / .xlsx / .xls 檔案")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(400, f"檔案解析失敗：{e}")
-
-    if not rows:
-        raise HTTPException(400, "檔案沒有資料列")
-
-    col_map = {
-        "id_card": ["id_card", "身分證", "身分證字號", "身分證號", "id", "idcard"],
-        "user_name": ["user_name", "姓名", "name", "長者姓名", "個案姓名"],
-        "gender": ["gender", "性別", "sex"],
-        "age": ["age", "年齡"],
-        "height": ["height", "身高", "身高cm", "身高(cm)"],
-        "weight": ["weight", "體重", "體重kg", "體重(kg)"],
-        "body_fat": ["body_fat", "體脂", "體脂率", "體脂肪", "體脂肪率", "脂肪"],
-        "smi": ["smi", "骨骼肌指數", "smi_kgm2", "骨骼肌量smi"],
-        "muscle_mass": ["肌肉質量", "肌肉量", "骨骼肌量", "除脂肪量"],
-        "systolic": ["systolic", "收縮壓", "sbp", "收縮"],
-        "diastolic": ["diastolic", "舒張壓", "dbp", "舒張"],
-        "pulse": ["pulse", "脈搏", "心率", "hr"],
-        "grip_strength": ["grip_strength", "握力", "握力kg", "握力(kg)"],
-        "chair_stand_time": ["chair_stand_time", "五次坐站", "坐站", "chair", "5次坐站", "五次坐立"],
-        "walking_time": ["walking_time", "走路時間", "步速", "walk", "起身行走", "TUG"],
-        # 真正的日期欄優先；「檢測時間」在貴司 Excel 常是秒數，勿當日期
-        "measure_time": [
-            "日期", "檢測日期", "量測日期", "測量日期", "資料日期",
-            "檢驗日期", "評估日期", "施測日期", "datetime", "date",
-            "measure_date", "measured_at", "measure_time",
-            "量測時間", "測量時間", "檢測日時",
-        ],
-    }
-    sample_keys = list(rows[0].keys())
-    lower_cols = {str(c).strip().lower(): str(c).strip() for c in sample_keys}
-    # 也支援欄名含「日期」「時間」的模糊對應
-    resolved = {}
-    for key, aliases in col_map.items():
-        for a in aliases:
-            if a.lower() in lower_cols:
-                resolved[key] = lower_cols[a.lower()]
-                break
-    if "measure_time" not in resolved:
-        # 從樣本判斷哪個欄位看起來像日期時間，避開「檢測時間=10」這種秒數欄
-        skip_names = ("走路時間", "坐站", "五次", "握力", "脈搏", "收縮", "舒張")
-        candidates = []
-        for lk, orig in lower_cols.items():
-            if any(s in orig for s in skip_names):
-                continue
-            if any(k in lk for k in ("日期", "date", "datetime", "日時")):
-                candidates.append(orig)
-        if not candidates:
-            for lk, orig in lower_cols.items():
-                if orig in skip_names or "走路" in orig or "坐站" in orig:
-                    continue
-                if any(k in lk for k in ("時間", "time")) and "檢測時間" not in orig:
-                    candidates.append(orig)
-        if candidates:
-            resolved["measure_time"] = candidates[0]
-        else:
-            # 最後才考慮「檢測時間」，且樣本必須像日期
-            for lk, orig in lower_cols.items():
-                if "檢測時間" in orig or lk == "time":
-                    sample = rows[0].get(orig)
-                    md, mt = normalize_measure_time(sample)
-                    if sample is not None and str(sample).strip() and not (
-                        isinstance(sample, (int, float)) and float(sample) < 40000
-                    ) and md and not md.startswith(datetime.now().strftime("%Y-%m-%d")):
-                        resolved["measure_time"] = orig
-                    break
-    if "id_card" not in resolved or "user_name" not in resolved:
-        raise HTTPException(400, "檔案必須至少包含「身分證」與「姓名」欄位")
-
-    success = skipped = failed = 0
-    messages = []
-    seen_in_file_time = set()
-    seen_in_file_fp = set()
-    th = get_thresholds(db)
-    used_file_date = "measure_time" in resolved
-    if not used_file_date:
-        messages.append("提醒：檔案未找到「檢測日期／時間」欄，將使用匯入當下時間。請確認 Excel 有日期欄。")
-
-    for idx, row in enumerate(rows):
-        try:
-            def get(key, default=None):
-                col = resolved.get(key)
-                if not col:
-                    return default
-                val = row.get(col)
-                if val is None:
-                    return default
-                # 保留 datetime／數字給 normalize_measure_time 解析
-                if key == "measure_time":
-                    if isinstance(val, (datetime, )):
-                        return val
-                    from datetime import date as _date
-                    if isinstance(val, _date):
-                        return val
-                    if isinstance(val, (int, float)) and not isinstance(val, bool):
-                        return val
-                    s = str(val).strip()
-                    return s if s else default
-                if str(val).strip() == "":
-                    return default
-                return str(val).strip()
-
-            id_card = get("id_card")
-            user_name = get("user_name")
-            if not id_card or not user_name:
-                failed += 1
-                messages.append(f"第 {idx+2} 列：缺少身分證或姓名")
-                continue
-
-            gender_raw = get("gender", "F")
-            gender = "M" if str(gender_raw).upper() in ("M", "男", "MALE") else "F"
-
-            def to_float(v):
-                if v is None:
-                    return None
-                try:
-                    return float(str(v).replace(",", ""))
-                except Exception:
-                    return None
-
-            def to_int(v):
-                f = to_float(v)
-                return int(f) if f is not None else None
-
-            height = to_float(get("height"))
-            weight = to_float(get("weight"))
-            grip = to_float(get("grip_strength"))
-            chair = to_float(get("chair_stand_time"))
-            walk = to_float(get("walking_time"))
-            smi = to_float(get("smi"))
-            muscle_mass = to_float(get("muscle_mass"))
-            if smi is None and muscle_mass and height and height > 0:
-                # 骨骼肌指數 SMI = 肌肉質量(kg) / 身高(m)^2
-                hm = height / 100.0
-                smi = round(muscle_mass / (hm * hm), 2)
-            systolic = to_int(get("systolic"))
-            diastolic = to_int(get("diastolic"))
-            pulse = to_int(get("pulse"))
-            body_fat = to_float(get("body_fat"))
-            age = to_int(get("age"))
-
-            if grip is not None and (grip < 0 or grip > 80):
-                failed += 1
-                messages.append(f"第 {idx+2} 列：握力數值異常 ({grip})")
-                continue
-            if systolic is not None and (systolic < 50 or systolic > 250):
-                failed += 1
-                messages.append(f"第 {idx+2} 列：收縮壓異常 ({systolic})")
-                continue
-
-            raw_time = get("measure_time")
-            # 「檢測時間」若是 5/10/15 這種秒數，改抓「日期」欄
-            def _looks_like_seconds(v):
-                if isinstance(v, (int, float)) and not isinstance(v, bool):
-                    return 0 <= float(v) < 2000
-                s = str(v or "").strip()
-                try:
-                    return s.isdigit() and int(s) < 2000
-                except Exception:
-                    return False
-            if raw_time is None or _looks_like_seconds(raw_time):
-                for alt in ("日期", "檢測日期", "量測日期", "date", "datetime"):
-                    if alt in row and row.get(alt) not in (None, ""):
-                        raw_time = row.get(alt)
-                        break
-            measure_date, measure_time = normalize_measure_time(raw_time)
-            tkey = (_norm_id(id_card), measure_time)
-            fkey = _fp_key(id_card, measure_time, grip, chair, walk, smi, systolic)
-
-            if tkey in seen_in_file_time or fkey in seen_in_file_fp:
-                skipped += 1
-                messages.append(f"第 {idx+2} 列：檔案內重複，已略過（{user_name}）")
-                continue
-            seen_in_file_time.add(tkey)
-            seen_in_file_fp.add(fkey)
-
-            exists = db.query(Measurement).filter(
-                Measurement.id_card == id_card,
-                Measurement.measure_time == measure_time,
-            ).first()
-            if exists:
-                skipped += 1
-                messages.append(f"第 {idx+2} 列：與資料庫時間重複，已略過（{user_name} {measure_time}）")
-                continue
-
-            same_content = db.query(Measurement).filter(
-                Measurement.id_card == id_card,
-                Measurement.measure_date == measure_date,
-            ).all()
-            content_dup = False
-            for old in same_content:
-                if _fp_key(old.id_card, old.measure_time, old.grip_strength, old.chair_stand_time, old.walking_time, old.smi, old.systolic) == fkey:
-                    content_dup = True
-                    break
-            if content_dup:
-                skipped += 1
-                messages.append(f"第 {idx+2} 列：與資料庫內容相同，已略過（{user_name}）")
-                continue
-
-            bmi = calc_bmi(height, weight)
-            stage, abn_count, status_text = judge_sarcopenia(gender, grip, chair, walk, smi, age=age)
-            if systolic and systolic >= int(th.get("systolic_high", 140)):
-                if status_text == "各項指標正常":
-                    status_text = f"血壓偏高 ({systolic}/{diastolic or '?'})"
-                else:
-                    status_text += f" / 血壓偏高 ({systolic}/{diastolic or '?'})"
-                abn_count += 1
-
-            rec = Measurement(
-                id_card=id_card,
-                user_name=user_name,
-                gender=gender,
-                age=age,
-                height=height,
-                weight=weight,
-                bmi=bmi,
-                body_fat=body_fat,
-                smi=smi,
-                systolic=systolic,
-                diastolic=diastolic,
-                pulse=pulse,
-                grip_strength=grip,
-                chair_stand_time=chair,
-                walking_time=walk,
-                sarcopenia_stage=stage,
-                abnormal_count=abn_count,
-                status=status_text,
-                measure_date=measure_date,
-                measure_time=measure_time,
-                source="csv" if filename.endswith(".csv") else "excel",
-                created_by=current_user.username,
-            )
-            db.add(rec)
-            db.flush()
-            create_abnormal_alert(db, rec)
-            success += 1
-        except Exception as e:
-            failed += 1
-            messages.append(f"第 {idx+2} 列錯誤：{e}")
-
-    db.commit()
-    deleted, del_names = purge_duplicate_measurements(db)
-    if deleted:
-        messages.append(f"自動審核後刪除資料庫重複 {deleted} 筆")
-        messages.extend([f"已刪除：{n}" for n in del_names[:10]])
-    add_audit(
-        db, current_user.username, "import",
-        f"file={filename} success={success} skipped={skipped} failed={failed} deleted={deleted}"
-    )
-    return ImportResult(success=success, skipped=skipped, failed=failed, deleted=deleted, messages=messages[:40])
-
-
-@app.post("/api/dedupe", tags=["Import"])
-def dedupe_measurements(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    deleted, names = purge_duplicate_measurements(db)
-    add_audit(db, current_user.username, "dedupe", f"deleted={deleted}")
-    return {
-        "deleted": deleted,
-        "messages": [f"已刪除：{n}" for n in names] or ["沒有發現重複資料"],
-    }
-
-
-# ========== Stats ==========
-@app.get("/api/stats", response_model=StatsOut, tags=["Stats"])
-def get_stats(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    query = db.query(Measurement)
-    if start_date:
-        query = query.filter(Measurement.measure_date >= start_date)
-    if end_date:
-        query = query.filter(Measurement.measure_date <= end_date)
-    records = query.all()
-    total = len(records)
-    if total == 0:
-        return StatsOut(
-            total_records=0, unique_users=0, avg_grip=0, avg_chair=0, avg_walk=0,
-            multi_abnormal_rate=0, summary_text="所選區間無檢測數據。",
-            sarcopenia_pie=[
-                {"name": "正常", "value": 0, "color": "#10b981"},
-                {"name": "肌少症前期", "value": 0, "color": "#f59e0b"},
-                {"name": "肌少症", "value": 0, "color": "#f97316"},
-                {"name": "嚴重肌少症", "value": 0, "color": "#ef4444"},
-            ],
-            monthly_trends={"months": [], "counts": [], "avg_grip": [], "avg_chair": [], "avg_walk": []},
-        )
-
-    unique_users = len(set(r.id_card for r in records))
-    grips = [r.grip_strength for r in records if r.grip_strength is not None]
-    chairs = [r.chair_stand_time for r in records if r.chair_stand_time is not None]
-    walks = [r.walking_time for r in records if r.walking_time is not None]
-    multi = sum(1 for r in records if (r.abnormal_count or 0) >= 2)
-    stage_counts = {"正常": 0, "肌少症前期": 0, "肌少症": 0, "嚴重肌少症": 0}
-    month_map = {}
-    for r in records:
-        stage_counts[r.sarcopenia_stage] = stage_counts.get(r.sarcopenia_stage, 0) + 1
-        mkey = (r.measure_date or "")[:7]
-        if mkey:
-            if mkey not in month_map:
-                month_map[mkey] = {"count": 0, "grips": [], "chairs": [], "walks": []}
-            month_map[mkey]["count"] += 1
-            if r.grip_strength is not None:
-                month_map[mkey]["grips"].append(r.grip_strength)
-            if r.chair_stand_time is not None:
-                month_map[mkey]["chairs"].append(r.chair_stand_time)
-            if r.walking_time is not None:
-                month_map[mkey]["walks"].append(r.walking_time)
-
-    sorted_months = sorted(month_map.keys())
-    monthly_trends = {
-        "months": sorted_months,
-        "counts": [month_map[m]["count"] for m in sorted_months],
-        "avg_grip": [round(sum(month_map[m]["grips"]) / len(month_map[m]["grips"]), 1) if month_map[m]["grips"] else 0 for m in sorted_months],
-        "avg_chair": [round(sum(month_map[m]["chairs"]) / len(month_map[m]["chairs"]), 1) if month_map[m]["chairs"] else 0 for m in sorted_months],
-        "avg_walk": [round(sum(month_map[m]["walks"]) / len(month_map[m]["walks"]), 1) if month_map[m]["walks"] else 0 for m in sorted_months],
-    }
-    pre_pct = round(stage_counts.get("肌少症前期", 0) / total * 100, 1)
-    sarco_pct = round((stage_counts.get("肌少症", 0) + stage_counts.get("嚴重肌少症", 0)) / total * 100, 1)
-    return StatsOut(
-        total_records=total,
-        unique_users=unique_users,
-        avg_grip=round(sum(grips) / len(grips), 1) if grips else 0,
-        avg_chair=round(sum(chairs) / len(chairs), 1) if chairs else 0,
-        avg_walk=round(sum(walks) / len(walks), 1) if walks else 0,
-        multi_abnormal_rate=round(multi / total * 100, 1),
-        summary_text=(
-            f"指定統計區間累計完成 {total} 筆體適能與健康量測，列冊追蹤 {unique_users} 位長者。"
-            f"【肌少衰弱分期】：判定為「肌少症前期」佔 {pre_pct}%，"
-            f"進入「肌少症/嚴重肌少症」階段佔 {sarco_pct}%。"
-        ),
-        sarcopenia_pie=[
-            {"name": "正常", "value": stage_counts.get("正常", 0), "color": "#10b981"},
-            {"name": "肌少症前期", "value": stage_counts.get("肌少症前期", 0), "color": "#f59e0b"},
-            {"name": "肌少症", "value": stage_counts.get("肌少症", 0), "color": "#f97316"},
-            {"name": "嚴重肌少症", "value": stage_counts.get("嚴重肌少症", 0), "color": "#ef4444"},
-        ],
-        monthly_trends=monthly_trends,
-    )
-
-
-@app.get("/api/report/period", tags=["Report"])
-def period_report(
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    query = db.query(Measurement)
-    if start_date:
-        query = query.filter(Measurement.measure_date >= start_date)
-    if end_date:
-        query = query.filter(Measurement.measure_date <= end_date)
-    records = query.all()
-    total = len(records)
-    unique = len(set(r.id_card for r in records))
-    stages = {}
-    abnormal_people = set()
-    for r in records:
-        stages[r.sarcopenia_stage or "正常"] = stages.get(r.sarcopenia_stage or "正常", 0) + 1
-        if (r.abnormal_count or 0) > 0 or (r.sarcopenia_stage and r.sarcopenia_stage != "正常"):
-            abnormal_people.add(r.id_card)
-    return {
-        "start_date": start_date,
-        "end_date": end_date,
-        "total_records": total,
-        "unique_users": unique,
-        "abnormal_users": len(abnormal_people),
-        "stage_counts": stages,
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "operator": current_user.username,
-    }
-
-
-# ========== Export ==========
-@app.get("/api/export/csv", tags=["Export"])
-def export_csv(
-    q: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    query = db.query(Measurement)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            Measurement.id_card.ilike(like),
-            Measurement.user_name.ilike(like),
-        ))
-    if start_date:
-        query = query.filter(Measurement.measure_date >= start_date)
-    if end_date:
-        query = query.filter(Measurement.measure_date <= end_date)
-    records = query.order_by(Measurement.measure_time.desc()).all()
-    output = io.StringIO()
-    output.write("\ufeff")
-    writer = csv.writer(output)
-    writer.writerow([
-        "身分證", "姓名", "性別", "年齡", "身高cm", "體重kg", "BMI", "體脂率%",
-        "SMI", "收縮壓", "舒張壓", "脈搏", "握力kg", "五次坐站秒", "走路時間秒",
-        "肌少症分期", "異常數", "狀態", "檢測日期", "檢測時間"
-    ])
-    for r in records:
-        writer.writerow([
-            r.id_card, r.user_name, r.gender, r.age, r.height, r.weight, r.bmi, r.body_fat,
-            r.smi, r.systolic, r.diastolic, r.pulse, r.grip_strength, r.chair_stand_time,
-            r.walking_time, r.sarcopenia_stage, r.abnormal_count, r.status,
-            r.measure_date, r.measure_time,
-        ])
-    output.seek(0)
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=babymomo_export.csv"},
-    )
-
-
-# ========== Cases 個案總覽 ==========
-@app.get("/api/cases", tags=["Cases"])
-def list_cases(
-    q: Optional[str] = None,
-    stage: Optional[str] = None,
-    need_care: bool = False,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(30, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """每位長者最新一筆 + 異常次數摘要"""
-    subq = (
-        db.query(
-            Measurement.id_card,
-            func.max(Measurement.measure_time).label("max_time"),
-        )
-        .group_by(Measurement.id_card)
-        .subquery()
-    )
-    query = (
-        db.query(Measurement)
-        .join(subq, (Measurement.id_card == subq.c.id_card) & (Measurement.measure_time == subq.c.max_time))
-    )
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            Measurement.id_card.ilike(like),
-            Measurement.user_name.ilike(like),
-        ))
-    if stage:
-        query = query.filter(Measurement.sarcopenia_stage == stage)
-    if need_care:
-        query = query.filter(or_(
-            Measurement.abnormal_count > 0,
-            Measurement.sarcopenia_stage != "正常",
-        ))
-
-    all_latest = query.order_by(Measurement.measure_time.desc()).all()
-    total = len(all_latest)
-    items = all_latest[(page - 1) * page_size: page * page_size]
-
-    result = []
-    for r in items:
-        total_recs = db.query(Measurement).filter(Measurement.id_card == r.id_card).count()
-        abn_times = db.query(Measurement).filter(
-            Measurement.id_card == r.id_card,
-            or_(Measurement.abnormal_count > 0, Measurement.sarcopenia_stage != "正常"),
-        ).count()
-        open_alerts = db.query(Alert).filter(
-            Alert.id_card == r.id_card,
-            Alert.is_handled == False,
-        ).count()
-        result.append({
-            "id_card": r.id_card,
-            "user_name": r.user_name,
-            "gender": r.gender,
-            "age": r.age,
-            "latest_stage": r.sarcopenia_stage,
-            "latest_time": r.measure_time,
-            "abnormal_count": r.abnormal_count,
-            "total_records": total_recs,
-            "abnormal_times": abn_times,
-            "open_alerts": open_alerts,
-            "grip_strength": r.grip_strength,
-            "chair_stand_time": r.chair_stand_time,
-            "walking_time": r.walking_time,
-            "smi": r.smi,
-            "systolic": r.systolic,
-            "diastolic": r.diastolic,
-            "bmi": r.bmi,
-            "need_care": (r.abnormal_count or 0) > 0 or (r.sarcopenia_stage and r.sarcopenia_stage != "正常"),
-        })
-    return {"total": total, "page": page, "page_size": page_size, "items": result}
-
-
-
-def _num_delta(before, after, higher_better: bool):
-    """回傳 (delta, improved: bool|None, label)."""
-    if before is None or after is None:
-        return None, None, "-"
-    try:
-        b, a = float(before), float(after)
-    except Exception:
-        return None, None, "-"
-    d = round(a - b, 2)
-    if higher_better:
-        improved = a > b
-        same = a == b
-    else:
-        improved = a < b
-        same = a == b
-    if same:
-        return d, None, "持平"
-    return d, improved, ("進步" if improved else "退步")
-
-
-def build_case_progress(db: Session, id_card: str, records: list) -> dict:
-    """
-    前測=最早一筆有體適能數據的檢測；後測=最新一筆。
-    中間區間彙總運動紀錄（ExerciseLog）。
-    """
-    if not records:
-        return {"available": False, "reason": "無檢測資料"}
-
-    # records 已由新到舊；前測取最舊，後測取最新
-    ordered = list(reversed(records))  # 舊 → 新
-    pre = ordered[0]
-    post = ordered[-1]
-    if pre.id == post.id:
-        return {
-            "available": False,
-            "reason": "目前只有 1 筆檢測，完成後測後即可比較",
-            "pre": None,
-            "post": None,
-        }
-
-    def pack(r):
-        return {
-            "id": r.id,
-            "measure_date": r.measure_date,
-            "measure_time": r.measure_time,
-            "grip_strength": r.grip_strength,
-            "chair_stand_time": r.chair_stand_time,
-            "walking_time": r.walking_time,
-            "smi": r.smi,
-            "body_fat": r.body_fat,
-            "bmi": r.bmi,
-            "sarcopenia_stage": r.sarcopenia_stage,
-            "weight": r.weight,
-        }
-
-    metrics = []
-    for label, key, higher in [
-        ("握力 kg", "grip_strength", True),
-        ("五次坐站 秒", "chair_stand_time", False),
-        ("走路時間 秒", "walking_time", False),
-        ("SMI", "smi", True),
-        ("體脂率 %", "body_fat", False),
-        ("BMI", "bmi", False),
-    ]:
-        b = getattr(pre, key, None)
-        a = getattr(post, key, None)
-        delta, improved, status = _num_delta(b, a, higher)
-        metrics.append({
-            "label": label,
-            "before": b,
-            "after": a,
-            "delta": delta,
-            "improved": improved,
-            "status": status,
-            "higher_better": higher,
-        })
-
-    # 分期文字比較（不計數值方向）
-    stage_before = pre.sarcopenia_stage or "-"
-    stage_after = post.sarcopenia_stage or "-"
-    stage_rank = {"正常": 0, "肌少症前期": 1, "肌少症": 2, "嚴重肌少症": 3}
-    rb, ra = stage_rank.get(stage_before), stage_rank.get(stage_after)
-    if rb is not None and ra is not None:
-        if ra < rb:
-            stage_status = "進步"
-            stage_improved = True
-        elif ra > rb:
-            stage_status = "退步"
-            stage_improved = False
-        else:
-            stage_status = "持平"
-            stage_improved = None
-    else:
-        stage_status = "-"
-        stage_improved = None
-
-    # 運動區間：前測日 ~ 後測日
-    start_d = (pre.measure_date or "")[:10]
-    end_d = (post.measure_date or "")[:10]
-    exercise_summary = {
-        "sessions": 0,
-        "total_duration_min": 0,
-        "total_calories": 0,
-        "by_type": {},
-        "items": [],
-    }
-    try:
-        if ExerciseLog is not None:
-            q = db.query(ExerciseLog).filter(ExerciseLog.id_card == id_card)
-            if start_d:
-                q = q.filter(ExerciseLog.measure_date >= start_d)
-            if end_d:
-                q = q.filter(ExerciseLog.measure_date <= end_d)
-            logs = q.order_by(ExerciseLog.measure_time.asc()).all()
-            exercise_summary["sessions"] = len(logs)
-            dur = 0.0
-            cal = 0.0
-            by_type = {}
-            items = []
-            for lg in logs[:100]:
-                if lg.duration_sec:
-                    dur += float(lg.duration_sec)
-                if lg.calories:
-                    cal += float(lg.calories)
-                t = lg.exercise_type or "其他"
-                by_type[t] = by_type.get(t, 0) + 1
-                items.append({
-                    "date": lg.measure_date,
-                    "type": t,
-                    "machine_name": lg.machine_name,
-                    "duration_sec": lg.duration_sec,
-                    "calories": lg.calories,
-                    "summary": lg.summary,
-                })
-            exercise_summary["total_duration_min"] = round(dur / 60.0, 1)
-            exercise_summary["total_calories"] = round(cal, 1)
-            exercise_summary["by_type"] = by_type
-            exercise_summary["items"] = items
-    except Exception:
-        pass
-
-    improved_n = sum(1 for m in metrics if m["improved"] is True)
-    declined_n = sum(1 for m in metrics if m["improved"] is False)
-
-    return {
-        "available": True,
-        "pre": pack(pre),
-        "post": pack(post),
-        "metrics": metrics,
-        "stage": {
-            "before": stage_before,
-            "after": stage_after,
-            "status": stage_status,
-            "improved": stage_improved,
+    const hist = [...data.history].reverse();
+    const dates = hist.map((h) => (h.measure_date || "").slice(5) || h.measure_time || "-");
+    const gripStd = isMale ? 28 : 18;
+    const smiStd = isMale ? 7.0 : 5.7;
+
+    function renderMetricChart(elId, title, values, unit, color, std, higherBetter) {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      const chart = echarts.getInstanceByDom(el) || echarts.init(el);
+      const nums = values.map((v) => (v == null || v === "" ? null : Number(v)));
+      const latestVal = [...nums].reverse().find((v) => v != null);
+      const pass = latestVal == null || std == null ? null : (higherBetter ? latestVal >= std : latestVal < std);
+      chart.setOption({
+        title: {
+          text: title,
+          subtext: latestVal == null ? "尚無資料" : (`最新 ${latestVal} ${unit}` + (pass == null ? "" : (pass ? " · 達標" : " · 未達標"))),
+          left: 8,
+          top: 2,
+          textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
+          subtextStyle: { fontSize: 11, color: pass === false ? "#dc2626" : "#0f766e" },
         },
-        "exercise": exercise_summary,
-        "summary_text": (
-            f"前測 {start_d or '-'} → 後測 {end_d or '-'}："
-            f"進步 {improved_n} 項、退步 {declined_n} 項、分期 {stage_status}；"
-            f"期間運動 {exercise_summary['sessions']} 次、約 {exercise_summary['total_duration_min']} 分鐘。"
-        ),
-    }
-
-
-
-@app.get("/api/progress", tags=["Progress"])
-def list_progress(
-    q: Optional[str] = None,
-    only_comparable: bool = True,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """後測區：列出可前後測比較的個案摘要。"""
-    # 每人最新兩筆（用子查詢較重，改以分組取 id_card）
-    query = db.query(Measurement.id_card, Measurement.user_name, func.count(Measurement.id).label("cnt"))
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(or_(Measurement.id_card.ilike(like), Measurement.user_name.ilike(like)))
-    query = query.group_by(Measurement.id_card, Measurement.user_name)
-    if only_comparable:
-        query = query.having(func.count(Measurement.id) >= 2)
-    query = query.order_by(func.max(Measurement.measure_time).desc())
-    total = query.count()
-    rows = query.offset((page - 1) * page_size).limit(page_size).all()
-    items = []
-    for id_card, user_name, cnt in rows:
-        recs = (
-            db.query(Measurement)
-            .filter(Measurement.id_card == id_card)
-            .order_by(Measurement.measure_time.desc())
-            .all()
-        )
-        prog = build_case_progress(db, id_card, recs)
-        latest = recs[0] if recs else None
-        items.append({
-            "id_card": id_card,
-            "user_name": user_name or (latest.user_name if latest else ""),
-            "gender": latest.gender if latest else None,
-            "age": latest.age if latest else None,
-            "record_count": cnt,
-            "progress": prog,
-        })
-    return {"total": total, "page": page, "items": items}
-
-
-@app.get("/api/cases/{id_card}", tags=["Cases"])
-def get_case(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    records = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == id_card)
-        .order_by(Measurement.measure_time.desc())
-        .all()
-    )
-    if not records:
-        raise HTTPException(404, "找不到此個案")
-    latest = records[0]
-    notes = (
-        db.query(CareNote)
-        .filter(CareNote.id_card == id_card)
-        .order_by(CareNote.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    advice = get_exercise_advice(latest.sarcopenia_stage)
-    vitals = {
-        "gender": latest.gender,
-        "age": latest.age,
-        "grip_strength": latest.grip_strength,
-        "chair_stand_time": latest.chair_stand_time,
-        "walking_time": latest.walking_time,
-        "smi": latest.smi,
-        "bp_status": bp_status(latest.systolic, latest.diastolic),
-        "sarcopenia_stage": latest.sarcopenia_stage,
-    }
-    intervention = build_intervention_for_case(db, id_card, vitals, stage=latest.sarcopenia_stage)
-    custom_items = get_case_equipment_items(db, id_card)
-    return {
-        "profile": {
-            "id_card": latest.id_card,
-            "user_name": latest.user_name,
-            "gender": latest.gender,
-            "age": latest.age,
-            "height": latest.height,
-            "weight": latest.weight,
-            "bmi": latest.bmi,
+        tooltip: { trigger: "axis" },
+        grid: { left: 44, right: 16, top: 48, bottom: 28 },
+        xAxis: {
+          type: "category",
+          data: dates,
+          axisTick: { show: false },
+          axisLine: { lineStyle: { color: "#e2e8f0" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
         },
-        "latest": MeasurementOut.model_validate(latest),
-        "total_records": len(records),
-        "history": [MeasurementOut.model_validate(r) for r in records],
-        "care_notes": [CareNoteOut.model_validate(n) for n in notes],
-        "exercise_advice": advice,
-        "intervention_plan": intervention,
-        "equipment_plan": {
-            "is_custom": custom_items is not None,
-            "items": custom_items if custom_items is not None else intervention.get("equipment") or [],
-            "source": "custom" if custom_items is not None else "auto",
+        yAxis: {
+          type: "value",
+          name: unit,
+          nameTextStyle: { color: "#94a3b8", fontSize: 10 },
+          splitLine: { lineStyle: { color: "#f1f5f9" } },
+          axisLabel: { color: "#94a3b8", fontSize: 10 },
         },
-        "suggested_retest_date": suggested_retest_date(
-            latest.sarcopenia_stage, latest.measure_date
-        ),
-        "standards_compare": compare_to_standards(
-            latest.age,
-            latest.gender,
-            weight=latest.weight,
-            body_fat=latest.body_fat,
-            smi=latest.smi,
-            bmi=latest.bmi,
-            systolic=latest.systolic,
-            diastolic=latest.diastolic,
-            pulse=latest.pulse,
-            grip_strength=latest.grip_strength,
-            chair_stand_time=latest.chair_stand_time,
-            walking_time=latest.walking_time,
-        ),
-        "progress": build_case_progress(db, id_card, records),
+        series: [{
+          type: hist.length <= 1 ? "bar" : "line",
+          data: nums,
+          barMaxWidth: 36,
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 8,
+          lineStyle: { width: 3, color },
+          itemStyle: { color, borderRadius: [6, 6, 0, 0] },
+          areaStyle: hist.length > 1 ? { color: color + "22" } : undefined,
+          markLine: std != null ? {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed", color: "#94a3b8" },
+            label: { formatter: `標準 ${std}`, fontSize: 10, color: "#64748b" },
+            data: [{ yAxis: std }],
+          } : undefined,
+        }],
+      }, true);
+      window.addEventListener("resize", () => chart.resize());
     }
 
+    renderMetricChart("caseChartGrip", "握力", hist.map((h) => h.grip_strength), "kg", "#2bb8a8", gripStd, true);
+    renderMetricChart("caseChartChair", "五次坐站", hist.map((h) => h.chair_stand_time), "秒", "#f08a4b", 12, false);
+    renderMetricChart("caseChartWalk", "走路時間", hist.map((h) => h.walking_time), "秒", "#8ea4f5", 20, false);
+    renderMetricChart("caseChartSmi", "骨骼肌量 SMI", hist.map((h) => h.smi), "kg/m²", "#e06b8a", smiStd, true);
 
-@app.get("/api/cases/{id_card}/report", tags=["Report"], response_class=HTMLResponse)
-def case_print_report(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    records = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == id_card)
-        .order_by(Measurement.measure_time.desc())
-        .all()
-    )
-    if not records:
-        raise HTTPException(404, "找不到此個案")
-    latest = records[0]
-    g = "男" if latest.gender == "M" else "女"
-    advice_obj = get_exercise_advice(latest.sarcopenia_stage)
-    retest = suggested_retest_date(latest.sarcopenia_stage, latest.measure_date)
-    advice_items = "".join(f"<li>{it}</li>" for it in (advice_obj.get("items") or []))
+    const caseEl = document.getElementById("caseTrendChart");
+    const chart = echarts.getInstanceByDom(caseEl) || echarts.init(caseEl);
+    const g = latest.grip_strength != null ? Number(latest.grip_strength) : null;
+    const c = latest.chair_stand_time != null ? Number(latest.chair_stand_time) : null;
+    const w = latest.walking_time != null ? Number(latest.walking_time) : null;
+    const sm = latest.smi != null ? Number(latest.smi) : null;
+    function pctHigher(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (val / std) * 100)));
+    }
+    function pctLower(val, std) {
+      if (val == null || !std) return 0;
+      return Math.round(Math.max(0, Math.min(150, (std / Math.max(val, 0.01)) * 100)));
+    }
+    const items = [
+      { name: "握力", pct: pctHigher(g, gripStd), raw: g == null ? "-" : g + " kg", ok: g != null && g >= gripStd },
+      { name: "五次坐站", pct: pctLower(c, 12), raw: c == null ? "-" : c + " 秒", ok: c != null && c < 12 },
+      { name: "走路時間", pct: pctLower(w, 20), raw: w == null ? "-" : w + " 秒", ok: w != null && w < 20 },
+      { name: "SMI", pct: pctHigher(sm, smiStd), raw: sm == null ? "-" : sm + " kg/m²", ok: sm != null && sm >= smiStd },
+    ];
+    chart.setOption({
+      title: {
+        text: "最新檢測達標率（100% = 剛好達到標準）",
+        left: 8,
+        top: 4,
+        textStyle: { fontSize: 13, color: "#334155", fontWeight: 700 },
+      },
+      tooltip: {
+        trigger: "axis",
+        formatter: (p) => {
+          const i = items[p[0].dataIndex];
+          return `${i.name}<br/>實測：${i.raw}<br/>達標率：${i.pct}%`;
+        },
+      },
+      grid: { left: 80, right: 56, top: 40, bottom: 24 },
+      xAxis: {
+        type: "value",
+        max: 150,
+        axisLabel: { formatter: "{value}%" },
+        splitLine: { lineStyle: { color: "#f1f5f9" } },
+      },
+      yAxis: {
+        type: "category",
+        data: items.map((i) => i.name),
+        axisTick: { show: false },
+        axisLine: { show: false },
+        axisLabel: { color: "#475569" },
+      },
+      series: [{
+        type: "bar",
+        data: items.map((i) => ({
+          value: i.pct,
+          itemStyle: { color: i.ok ? "#2bb8a8" : "#f08a4b", borderRadius: [0, 8, 8, 0] },
+        })),
+        barWidth: 16,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { type: "dashed", color: "#94a3b8" },
+          label: { formatter: "標準 100%", fontSize: 10 },
+          data: [{ xAxis: 100 }],
+        },
+        label: {
+          show: true,
+          position: "right",
+          formatter: (p) => items[p.dataIndex].raw,
+          color: "#64748b",
+          fontSize: 11,
+        },
+      }],
+    }, true);
+    window.addEventListener("resize", () => chart.resize());
 
-    hist_rows = "".join(
-        f"<tr><td>{r.measure_time or '-'}</td><td>{r.grip_strength if r.grip_strength is not None else '-'}</td>"
-        f"<td>{r.chair_stand_time if r.chair_stand_time is not None else '-'}</td>"
-        f"<td>{r.walking_time if r.walking_time is not None else '-'}</td>"
-        f"<td>{r.smi if r.smi is not None else '-'}</td>"
-        f"<td>{r.systolic or '-'}/{r.diastolic or '-'}</td>"
-        f"<td>{r.sarcopenia_stage or '-'}</td></tr>"
-        for r in records[:12]
-    )
-    html = f"""<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
-<title>個案報告 - {latest.user_name}</title>
-<style>
-body{{font-family:"Noto Sans TC",sans-serif;padding:24px;color:#111}}
-h1{{font-size:20px;margin:0 0 8px}} h2{{font-size:16px;margin:20px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}}
-table{{border-collapse:collapse;width:100%;font-size:13px}} th,td{{border:1px solid #ccc;padding:6px 8px;text-align:left}}
-th{{background:#f1f5f9}} .meta{{color:#555;font-size:13px;margin-bottom:16px}}
-.badge{{display:inline-block;padding:2px 8px;border-radius:4px;background:#e2e8f0}}
-.advice{{background:#fef3c7;padding:12px;border-radius:8px;margin-top:12px}}
-.advice ul{{margin:8px 0 0;padding-left:20px}}
-@media print{{.no-print{{display:none}}}}
-</style></head><body>
-<div class="no-print" style="margin-bottom:12px">
-  <button onclick="window.print()" style="padding:8px 16px;font-size:14px;cursor:pointer">列印 / 另存 PDF</button>
-  <span style="color:#666;font-size:13px;margin-left:8px">若要存成 PDF：在列印視窗選擇「另存為 PDF」或「Microsoft Print to PDF」</span>
-</div>
-<h1>寶貝機 · 長者體適能檢測報告</h1>
-<div class="meta">產生時間：{datetime.now().strftime("%Y-%m-%d %H:%M")}　操作者：{current_user.display_name}</div>
-<h2>基本資料</h2>
-<p><strong>{latest.user_name}</strong>（{latest.id_card}）　{g}　{latest.age or '-'} 歲<br>
-身高 {latest.height or '-'} cm　體重 {latest.weight or '-'} kg　BMI {latest.bmi or '-'}<br>
-最近檢測：{latest.measure_time or '-'}　分期：<span class="badge">{latest.sarcopenia_stage or '-'}</span></p>
-<h2>最近指標</h2>
-<table><tr><th>握力 kg</th><th>五次坐站 秒</th><th>走路時間 秒</th><th>SMI</th><th>血壓</th><th>脈搏</th></tr>
-<tr><td>{latest.grip_strength if latest.grip_strength is not None else '-'}</td>
-<td>{latest.chair_stand_time if latest.chair_stand_time is not None else '-'}</td>
-<td>{latest.walking_time if latest.walking_time is not None else '-'}</td>
-<td>{latest.smi if latest.smi is not None else '-'}</td>
-<td>{latest.systolic or '-'}/{latest.diastolic or '-'}</td>
-<td>{latest.pulse or '-'}</td></tr></table>
-<p>說明：{latest.status or '-'}</p>
-<div class="advice">
-  <strong>{advice_obj.get('title', '建議')}</strong>：{advice_obj.get('summary', '')}
-  <ul>{advice_items}</ul>
-  <p style="margin:8px 0 0"><strong>建議複檢日期：</strong>{retest}</p>
-</div>
-<h2>歷史紀錄（最近 12 筆）</h2>
-<table><tr><th>時間</th><th>握力</th><th>坐站</th><th>走路</th><th>SMI</th><th>血壓</th><th>分期</th></tr>
-{hist_rows}</table>
-<p style="margin-top:24px;font-size:12px;color:#888">本報告由寶貝機體適能檢測系統產生，僅供參考，不取代醫療診斷。</p>
-</body></html>"""
-    return HTMLResponse(html)
-
-
-def _ensure_cjk_font() -> Optional[str]:
-    """尋找或下載可顯示中文的字型，供 PDF 使用。"""
-    candidates = [
-        os.path.join(os.path.dirname(__file__), "fonts", "NotoSansTC-Regular.otf"),
-        "/tmp/NotoSansTC-Regular.otf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "C:/Windows/Fonts/msjh.ttc",
-        "C:/Windows/Fonts/mingliu.ttc",
-    ]
-    for p in candidates:
-        if p and os.path.isfile(p):
-            return p
-    # 嘗試下載輕量中文字型到 /tmp（僅第一次）
-    dest = "/tmp/NotoSansTC-Regular.otf"
-    urls = [
-        "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
-        "https://cdn.jsdelivr.net/gh/googlefonts/noto-cjk@main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
-    ]
-    try:
-        import urllib.request
-        for url in urls:
-            try:
-                urllib.request.urlretrieve(url, dest)
-                if os.path.isfile(dest) and os.path.getsize(dest) > 100000:
-                    return dest
-            except Exception:
-                continue
-    except Exception:
-        pass
-    return None
-
-
-# ========== Case PDF Report ==========
-@app.get("/api/cases/{id_card}/report.pdf", tags=["Report"])
-def case_pdf_report(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """產生個案 PDF 報告（可下載存檔）。"""
-    from fpdf import FPDF
-
-    records = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == id_card)
-        .order_by(Measurement.measure_time.desc())
-        .all()
-    )
-    if not records:
-        raise HTTPException(404, "找不到此個案")
-    latest = records[0]
-    g = "男" if latest.gender == "M" else "女"
-    advice = get_exercise_advice(latest.sarcopenia_stage)
-    retest = suggested_retest_date(latest.sarcopenia_stage, latest.measure_date)
-
-    font_path = _ensure_cjk_font()
-    has_cjk = False
-    pdf = FPDF()
-    pdf.set_auto_page_break(auto=True, margin=15)
-    pdf.add_page()
-    if font_path:
-        try:
-            pdf.add_font("Noto", "", font_path)
-            pdf.set_font("Noto", size=14)
-            has_cjk = True
-        except Exception:
-            has_cjk = False
-    if not has_cjk:
-        pdf.set_font("Helvetica", size=14)
-
-    def text(s, size=11):
-        s = "-" if s is None else str(s)
-        if has_cjk:
-            try:
-                pdf.set_font("Noto", size=size)
-                pdf.multi_cell(0, 7, s)
-                return
-            except Exception:
-                pass
-        # 無中文字型時：保留數字與英文，中文改為簡易替代，避免整份失敗
-        pdf.set_font("Helvetica", size=size)
-        safe = s.encode("latin-1", errors="replace").decode("latin-1")
-        pdf.multi_cell(0, 7, safe)
-
-    text("寶貝機 · 長者體適能檢測報告", 16)
-    text(f"產生時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}  操作者：{current_user.display_name}", 9)
-    pdf.ln(2)
-    text("【基本資料】", 12)
-    text(
-        f"{latest.user_name} ({latest.id_card})  {g}  {latest.age or '-'} 歲\n"
-        f"身高 {latest.height or '-'} cm  體重 {latest.weight or '-'} kg  BMI {latest.bmi or '-'}\n"
-        f"最近檢測：{latest.measure_time or '-'}  分期：{latest.sarcopenia_stage or '-'}"
-    )
-    pdf.ln(1)
-    text("【最近指標】", 12)
-    text(
-        f"握力：{latest.grip_strength if latest.grip_strength is not None else '-'} kg\n"
-        f"五次坐站：{latest.chair_stand_time if latest.chair_stand_time is not None else '-'} 秒\n"
-        f"走路時間：{latest.walking_time if latest.walking_time is not None else '-'} 秒\n"
-        f"SMI：{latest.smi if latest.smi is not None else '-'}\n"
-        f"血壓：{latest.systolic or '-'}/{latest.diastolic or '-'} mmHg  脈搏：{latest.pulse or '-'} bpm\n"
-        f"說明：{latest.status or '-'}"
-    )
-    pdf.ln(1)
-    text("【運動／復健建議】", 12)
-    text(f"{advice.get('title', '')}：{advice.get('summary', '')}")
-    for i, item in enumerate(advice.get("items") or [], 1):
-        text(f"{i}. {item}", 10)
-    text(f"建議複檢日期：{retest}", 11)
-    pdf.ln(1)
-    text("【歷史紀錄（最近 12 筆）】", 12)
-    for r in records[:12]:
-        text(
-            f"{r.measure_time or '-'} | 握力 {r.grip_strength if r.grip_strength is not None else '-'} | "
-            f"坐站 {r.chair_stand_time if r.chair_stand_time is not None else '-'} | "
-            f"走路 {r.walking_time if r.walking_time is not None else '-'} | "
-            f"SMI {r.smi if r.smi is not None else '-'} | "
-            f"{r.systolic or '-'}/{r.diastolic or '-'} | {r.sarcopenia_stage or '-'}",
-            9,
-        )
-    pdf.ln(3)
-    text("本報告由寶貝機體適能檢測系統產生，僅供參考，不取代醫療診斷。", 8)
-
-    buf = io.BytesIO()
-    pdf.output(buf)
-    buf.seek(0)
-    fname = f"babymomo_{latest.id_card}_{datetime.now().strftime('%Y%m%d')}.pdf"
-    add_audit(db, current_user.username, "export_pdf", f"個案 {latest.user_name}({id_card})")
-    db.commit()
-    return StreamingResponse(
-        buf,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
-
-
-# ========== 複檢提醒 ==========
-@app.get("/api/reminders", tags=["Care"])
-def list_reminders(
-    days: int = Query(14, ge=1, le=90),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """列出即將到期或已過期的複檢／追蹤提醒。"""
-    today = datetime.now().strftime("%Y-%m-%d")
-    from datetime import timedelta
-    end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-    notes = (
-        db.query(CareNote)
-        .filter(
-            CareNote.next_follow_date.isnot(None),
-            CareNote.next_follow_date != "",
-            CareNote.next_follow_date <= end,
-        )
-        .order_by(CareNote.next_follow_date.asc())
-        .limit(200)
-        .all()
-    )
-    # 去重：同一身分證只留最近一筆有 next_follow_date 的
-    seen = set()
-    items = []
-    for n in notes:
-        if n.id_card in seen:
-            continue
-        seen.add(n.id_card)
-        overdue = (n.next_follow_date or "") < today
-        # 取最新分期
-        latest = (
-            db.query(Measurement)
-            .filter(Measurement.id_card == n.id_card)
-            .order_by(Measurement.measure_time.desc())
-            .first()
-        )
-        items.append({
-            "id": n.id,
-            "id_card": n.id_card,
-            "user_name": n.user_name or (latest.user_name if latest else None),
-            "next_follow_date": n.next_follow_date,
-            "overdue": overdue,
-            "content": n.content,
-            "created_by": n.created_by,
-            "stage": latest.sarcopenia_stage if latest else None,
-            "suggested_retest_date": suggested_retest_date(
-                latest.sarcopenia_stage if latest else None,
-                latest.measure_date if latest else None,
-            ),
-        })
-    # 也納入「有異常但沒有任何 next_follow_date」的個案（依分期建議複檢日）
-    subq = (
-        db.query(
-            Measurement.id_card,
-            func.max(Measurement.measure_time).label("max_time"),
-        )
-        .group_by(Measurement.id_card)
-        .subquery()
-    )
-    abnormal_latest = (
-        db.query(Measurement)
-        .join(subq, (Measurement.id_card == subq.c.id_card) & (Measurement.measure_time == subq.c.max_time))
-        .filter(or_(
-            Measurement.abnormal_count > 0,
-            Measurement.sarcopenia_stage != "正常",
-        ))
-        .all()
-    )
-    for r in abnormal_latest:
-        if r.id_card in seen:
-            continue
-        sug = suggested_retest_date(r.sarcopenia_stage, r.measure_date)
-        if sug <= end:
-            seen.add(r.id_card)
-            items.append({
-                "id": None,
-                "id_card": r.id_card,
-                "user_name": r.user_name,
-                "next_follow_date": sug,
-                "overdue": sug < today,
-                "content": "系統依分期自動建議複檢（尚未建立關懷紀錄）",
-                "created_by": "system",
-                "stage": r.sarcopenia_stage,
-                "suggested_retest_date": sug,
-            })
-    items.sort(key=lambda x: (x["next_follow_date"] or "9999", x["id_card"]))
-    return {
-        "today": today,
-        "until": end,
-        "total": len(items),
-        "overdue_count": sum(1 for i in items if i["overdue"]),
-        "items": items,
+    // 運動／復健建議
+    const adv = data.exercise_advice;
+    currentSuggestedRetest = data.suggested_retest_date || null;
+    const advBox = document.getElementById("exerciseAdviceBox");
+    if (adv && advBox) {
+      advBox.style.display = "block";
+      document.getElementById("exerciseTitle").textContent = adv.title || "運動建議";
+      document.getElementById("exerciseSummary").textContent = adv.summary || "";
+      document.getElementById("exerciseItems").innerHTML = (adv.items || []).map((t) => `<li>${t}</li>`).join("");
+      document.getElementById("exerciseRetest").textContent = currentSuggestedRetest || "-";
+      // 若關懷下次日期空白，自動帶入建議日
+      const nextInp = document.getElementById("careNextDate");
+      if (nextInp && !nextInp.value && currentSuggestedRetest) {
+        nextInp.value = currentSuggestedRetest;
+      }
+    } else if (advBox) {
+      advBox.style.display = "none";
     }
 
+    const notes = data.care_notes || [];
+    document.getElementById("careNotesList").innerHTML = notes.length
+      ? notes.map((n) => `
+        <div class="border-bottom py-1">
+          <span class="text-muted">${n.created_at ? n.created_at.replace("T", " ").slice(0, 16) : ""} · ${n.created_by || ""}</span>
+          ${n.next_follow_date ? `<span class="badge bg-info text-dark ms-1">下次 ${n.next_follow_date}</span>` : ""}
+          <div>${n.content}</div>
+        </div>
+      `).join("")
+      : '<div class="text-muted">尚無關懷紀錄</div>';
 
-# ========== 資料庫備份 ==========
-@app.get("/api/admin/backup", tags=["System"])
-def download_backup(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("superadmin", "admin")),
-):
-    """一鍵下載 SQLite 資料庫備份（僅管理員）。"""
-    db_url = os.getenv("DATABASE_URL", "sqlite:///./babymomo.db")
-    if not db_url.startswith("sqlite"):
-        raise HTTPException(400, "目前僅支援 SQLite 一鍵備份。PostgreSQL 請使用平台備份工具。")
-    # 解析路徑
-    path = db_url.replace("sqlite:///", "", 1)
-    if path.startswith("./"):
-        path = os.path.join(os.path.dirname(__file__), path[2:])
-    if not os.path.isabs(path):
-        path = os.path.join(os.path.dirname(__file__), path)
-    if not os.path.isfile(path):
-        raise HTTPException(404, f"找不到資料庫檔案：{path}")
-    add_audit(db, current_user.username, "backup_db", path)
-    db.commit()
-    fname = f"babymomo_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
-    return FileResponse(
-        path,
-        media_type="application/octet-stream",
-        filename=fname,
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
-
-
-# ========== Care notes ==========
-@app.get("/api/care-notes", tags=["Care"])
-def list_care_notes(
-    id_card: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    q = db.query(CareNote)
-    if id_card:
-        q = q.filter(CareNote.id_card == id_card)
-    total = q.count()
-    items = q.order_by(CareNote.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return {"total": total, "items": [CareNoteOut.model_validate(i) for i in items]}
-
-
-@app.post("/api/care-notes", response_model=CareNoteOut, tags=["Care"])
-def create_care_note(
-    payload: CareNoteCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    name = None
-    latest = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == payload.id_card)
-        .order_by(Measurement.measure_time.desc())
-        .first()
-    )
-    if latest:
-        name = latest.user_name
-    note = CareNote(
-        id_card=payload.id_card,
-        user_name=name,
-        alert_id=payload.alert_id,
-        note_type=payload.note_type or "followup",
-        content=payload.content,
-        next_follow_date=payload.next_follow_date,
-        created_by=current_user.username,
-    )
-    db.add(note)
-    db.commit()
-    db.refresh(note)
-    add_audit(db, current_user.username, "care_note", f"{payload.id_card} {payload.content[:40]}")
-    return note
-
-
-# ========== Alerts ==========
-@app.get("/api/alerts", tags=["Alerts"])
-def list_alerts(
-    only_unread: bool = False,
-    only_unhandled: bool = False,
-    q: Optional[str] = None,
-    start_date: Optional[str] = None,
-    end_date: Optional[str] = None,
-    stage: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    query = db.query(Alert)
-    role = current_user.role or "staff"
-    if role not in ("superadmin", "admin", "company_admin"):
-        query = query.filter(Alert.target_roles.ilike(f"%{role}%"))
-    if only_unread:
-        query = query.filter(Alert.is_read == False)
-    if only_unhandled:
-        query = query.filter(Alert.is_handled == False)
-    if q:
-        like = f"%{q.strip()}%"
-        query = query.filter(or_(Alert.id_card.ilike(like), Alert.user_name.ilike(like)))
-    if start_date:
-        # created_at is datetime; compare date prefix
-        query = query.filter(Alert.created_at >= start_date)
-    if end_date:
-        query = query.filter(Alert.created_at <= end_date + " 23:59:59")
-    if stage:
-        query = query.filter(Alert.sarcopenia_stage == stage)
-    total = query.count()
-    items = query.order_by(Alert.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return {
-        "total": total,
-        "unread": db.query(Alert).filter(Alert.is_read == False).count(),
-        "unhandled": db.query(Alert).filter(Alert.is_handled == False).count(),
-        "page": page,
-        "items": [
-            _alert_item_dict(db, a)
-            for a in items
-        ],
+    // 個案客製運動輔具建議
+    const eqPlan = data.equipment_plan || {};
+    _caseEqItems = eqPlan.items || [];
+    _caseEqIsCustom = !!eqPlan.is_custom;
+    renderCaseEqEditor();
+    const hint = document.getElementById("caseEqSourceHint");
+    if (hint) {
+      hint.innerHTML = _caseEqIsCustom
+        ? '<span class="text-success">目前為「此個案客製」內容，異常通報會優先使用。</span>'
+        : '<span class="text-muted">目前為系統依數據自動產生。管理員可改成此人專用後儲存。</span>';
     }
+    const eqMsg = document.getElementById("caseEqMsg");
+    if (eqMsg) eqMsg.textContent = "";
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
+let _caseEqItems = [];
+let _caseEqIsCustom = false;
 
-def _vitals_for_alert(db: Session, a: Alert) -> dict:
-    rec = None
-    if a.measurement_id:
-        rec = db.query(Measurement).filter(Measurement.id == a.measurement_id).first()
-    if not rec:
-        rec = (
-            db.query(Measurement)
-            .filter(Measurement.id_card == a.id_card)
-            .order_by(Measurement.measure_time.desc())
-            .first()
-        )
-    if not rec:
-        return {}
-    return {
-        "gender": rec.gender,
-        "age": rec.age,
-        "height": rec.height,
-        "weight": rec.weight,
-        "bmi": rec.bmi,
-        "body_fat": rec.body_fat,
-        "smi": rec.smi,
-        "systolic": rec.systolic,
-        "diastolic": rec.diastolic,
-        "pulse": rec.pulse,
-        "grip_strength": rec.grip_strength,
-        "chair_stand_time": rec.chair_stand_time,
-        "walking_time": rec.walking_time,
-        "bp_status": bp_status(rec.systolic, rec.diastolic),
-        "measure_time": rec.measure_time,
+function _caseEqCardHtml(it, idx) {
+  return `
+    <div class="border rounded p-2 bg-white" data-case-eq-idx="${idx}">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <strong class="small text-primary">#${idx + 1}</strong>
+        <button type="button" class="btn btn-sm btn-outline-danger py-0 admin-only" onclick="removeCaseEqRow(${idx})">刪除</button>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label small mb-0">器材名稱</label>
+          <input class="form-control form-control-sm case-eq-name" value="${(it.name || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-8">
+          <label class="form-label small mb-0">為什麼適合此人</label>
+          <input class="form-control form-control-sm case-eq-why" value="${(it.why || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-0">怎麼用</label>
+          <textarea class="form-control form-control-sm case-eq-how" rows="2">${it.how || ""}</textarea>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-0">注意事項</label>
+          <textarea class="form-control form-control-sm case-eq-caution" rows="2">${it.caution || ""}</textarea>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderCaseEqEditor() {
+  const box = document.getElementById("caseEqEditor");
+  if (!box) return;
+  box.innerHTML = _caseEqItems.map((it, i) => _caseEqCardHtml(it, i)).join("")
+    || '<div class="text-muted small">尚無項目，請按「新增一筆」後儲存為此個案專用。</div>';
+}
+
+function _collectCaseEqFromDom() {
+  const cards = document.querySelectorAll("#caseEqEditor [data-case-eq-idx]");
+  const items = [];
+  cards.forEach((card) => {
+    const name = card.querySelector(".case-eq-name")?.value?.trim() || "";
+    if (!name) return;
+    items.push({
+      id: `ceq_${items.length + 1}`,
+      name,
+      why: card.querySelector(".case-eq-why")?.value || "",
+      how: card.querySelector(".case-eq-how")?.value || "",
+      caution: card.querySelector(".case-eq-caution")?.value || "",
+    });
+  });
+  return items;
+}
+
+function addCaseEqRow() {
+  _caseEqItems = _collectCaseEqFromDom();
+  _caseEqItems.push({ name: "新器材", why: "", how: "", caution: "" });
+  renderCaseEqEditor();
+}
+
+function removeCaseEqRow(idx) {
+  _caseEqItems = _collectCaseEqFromDom();
+  _caseEqItems.splice(idx, 1);
+  renderCaseEqEditor();
+}
+
+async function saveCaseEquipment() {
+  if (!currentCaseId) return;
+  const msg = document.getElementById("caseEqMsg");
+  const items = _collectCaseEqFromDom();
+  if (!items.length) {
+    if (msg) msg.innerHTML = '<span class="text-danger">請至少保留一筆</span>';
+    return;
+  }
+  try {
+    const data = await api(`/api/cases/${encodeURIComponent(currentCaseId)}/equipment`, {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    });
+    _caseEqItems = data.items || items;
+    _caseEqIsCustom = true;
+    renderCaseEqEditor();
+    const hint = document.getElementById("caseEqSourceHint");
+    if (hint) hint.innerHTML = '<span class="text-success">已儲存為「此個案客製」，異常通報會優先使用。</span>';
+    if (msg) msg.innerHTML = '<span class="text-success">已儲存此人專用建議</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function resetCaseEquipment() {
+  if (!currentCaseId) return;
+  if (!confirm("確定刪除此個案的客製建議，改回系統依數據自動產生？")) return;
+  const msg = document.getElementById("caseEqMsg");
+  try {
+    await api(`/api/cases/${encodeURIComponent(currentCaseId)}/equipment`, { method: "DELETE" });
+    // 重新載入個案以取得自動建議
+    await openCase(currentCaseId);
+    if (msg) msg.innerHTML = '<span class="text-success">已恢復系統自動建議</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+function fillSuggestedRetest() {
+  if (currentSuggestedRetest) {
+    document.getElementById("careNextDate").value = currentSuggestedRetest;
+  }
+}
+
+async function openCaseReport(doPrint) {
+  if (!currentCaseId) return;
+  try {
+    const res = await api(
+      `/api/cases/${encodeURIComponent(currentCaseId)}/report`,
+      { raw: true }
+    );
+    if (!res.ok) {
+      let msg = "無法載入報告";
+      try {
+        const j = await res.json();
+        msg = j.detail || msg;
+      } catch (_) {}
+      throw new Error(msg);
     }
-
-
-@app.post("/api/alerts/{alert_id}/read", tags=["Alerts"])
-def mark_alert_read(
-    alert_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    a = db.query(Alert).get(alert_id)
-    if not a:
-        raise HTTPException(404, "找不到通報")
-    a.is_read = True
-    a.read_by = current_user.username
-    a.read_at = datetime.now(timezone.utc)
-    db.commit()
-    return {"ok": True}
-
-
-@app.post("/api/alerts/{alert_id}/handle", tags=["Alerts"])
-def handle_alert(
-    alert_id: int,
-    note: str = "",
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    a = db.query(Alert).get(alert_id)
-    if not a:
-        raise HTTPException(404, "找不到通報")
-    a.is_read = True
-    a.is_handled = True
-    a.handled_by = current_user.username
-    a.handled_at = datetime.now(timezone.utc)
-    a.handle_note = note or "已關懷處理"
-    if not a.read_by:
-        a.read_by = current_user.username
-        a.read_at = a.handled_at
-    db.commit()
-    # 同步寫一筆關懷紀錄
-    db.add(CareNote(
-        id_card=a.id_card,
-        user_name=a.user_name,
-        alert_id=a.id,
-        note_type="followup",
-        content=a.handle_note,
-        created_by=current_user.username,
-    ))
-    db.commit()
-    add_audit(db, current_user.username, "handle_alert", f"alert={alert_id} {a.user_name}")
-    return {"ok": True}
-
-
-@app.post("/api/alerts/batch-handle", tags=["Alerts"])
-def batch_handle_alerts(
-    ids: List[int] = Body(...),
-    note: str = Body("批次標記已關懷"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    if not ids:
-        raise HTTPException(400, "請提供通報 id 列表")
-    now = datetime.now(timezone.utc)
-    count = 0
-    for aid in ids:
-        a = db.query(Alert).get(aid)
-        if not a or a.is_handled:
-            continue
-        a.is_read = True
-        a.is_handled = True
-        a.handled_by = current_user.username
-        a.handled_at = now
-        a.handle_note = note
-        db.add(CareNote(
-            id_card=a.id_card,
-            user_name=a.user_name,
-            alert_id=a.id,
-            note_type="followup",
-            content=note,
-            created_by=current_user.username,
-        ))
-        count += 1
-    db.commit()
-    add_audit(db, current_user.username, "batch_handle_alerts", f"count={count}")
-    return {"ok": True, "handled": count}
-
-
-@app.post("/api/alerts/{alert_id}/line", tags=["Alerts"])
-def send_alert_to_line(
-    alert_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    a = db.query(Alert).get(alert_id)
-    if not a:
-        raise HTTPException(404, "找不到通報")
-    result = send_line_text(a.message or a.title)
-    add_audit(db, current_user.username, "line_alert", f"alert={alert_id} ok={result.get('ok')}")
-    return result
-
-
-@app.post("/api/alerts/line-test", tags=["Alerts"])
-def send_line_test(current_user: User = Depends(get_current_user)):
-    sample = (
-        "【寶貝機模擬通報】\n"
-        "個案：王小明（A123456789）\n"
-        "性別/年齡：男 / 72 歲\n"
-        "檢測時間：2026-09-15 10:00:00\n"
-        "握力：16.2 kg（不足）\n"
-        "五次坐站：14.8 秒（偏慢）\n"
-        "走路時間：22.1 秒（偏慢）\n"
-        "SMI：6.4（偏低）\n"
-        "血壓：168/98 mmHg（血壓偏高）\n"
-        "肌少症分期：嚴重肌少症\n"
-        "建議：盡快關懷，必要時轉介醫療或安排兩週內複測。\n"
-        f"操作者：{current_user.username}"
-    )
-    result = send_line_text(sample)
-    result["configured"] = line_configured()
-    return result
-
-
-@app.post("/api/alerts/daily-summary", tags=["Alerts"])
-def send_daily_summary(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    today = datetime.now().strftime("%Y-%m-%d")
-    today_recs = db.query(Measurement).filter(Measurement.measure_date == today).count()
-    unhandled = db.query(Alert).filter(Alert.is_handled == False).count()
-    today_alerts = db.query(Alert).filter(Alert.created_at >= datetime.now().replace(hour=0, minute=0, second=0)).count()
-    text = (
-        f"【寶貝機每日摘要】{today}\n"
-        f"今日新增檢測：{today_recs} 筆\n"
-        f"今日新增異常通報：{today_alerts} 筆\n"
-        f"目前未處理通報：{unhandled} 筆\n"
-        f"請登入系統查看詳情。"
-    )
-    result = send_line_text(text)
-    add_audit(db, current_user.username, "daily_summary", f"ok={result.get('ok')}")
-    return result
-
-
-# ========== Thresholds ==========
-@app.get("/api/settings/thresholds", response_model=ThresholdsOut, tags=["Settings"])
-def get_threshold_settings(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    return ThresholdsOut(**get_thresholds(db))
-
-
-@app.put("/api/settings/thresholds", response_model=ThresholdsOut, tags=["Settings"])
-def update_threshold_settings(
-    payload: ThresholdsOut,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    data = payload.model_dump()
-    row = db.query(SystemConfig).filter(SystemConfig.key == "thresholds").first()
-    if row:
-        row.value = json.dumps(data)
-        row.updated_by = current_user.username
-    else:
-        db.add(SystemConfig(key="thresholds", value=json.dumps(data), updated_by=current_user.username))
-    db.commit()
-    add_audit(db, current_user.username, "update_thresholds", json.dumps(data))
-    return payload
-
-
-def _clean_equipment_items(items) -> list:
-    cleaned = []
-    if not isinstance(items, list):
-        return cleaned
-    for i, it in enumerate(items):
-        if not isinstance(it, dict):
-            continue
-        name = str(it.get("name") or "").strip()
-        if not name:
-            continue
-        cleaned.append({
-            "id": str(it.get("id") or f"eq_{i+1}"),
-            "name": name[:100],
-            "why": str(it.get("why") or "")[:500],
-            "how": str(it.get("how") or "")[:800],
-            "caution": str(it.get("caution") or "")[:400],
-            "triggers": [str(t) for t in (it.get("triggers") or ["always_abnormal"])][:10]
-            if isinstance(it.get("triggers"), list) else ["always_abnormal"],
-        })
-    return cleaned
-
-
-@app.get("/api/cases/{id_card}/equipment", tags=["Cases"])
-def get_case_equipment(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """取得此個案的運動輔具建議（客製或系統自動）。"""
-    custom = get_case_equipment_items(db, id_card)
-    if custom is not None:
-        return {"id_card": id_card, "is_custom": True, "source": "custom", "items": custom}
-    # 用最新量測產生自動建議
-    latest = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == id_card)
-        .order_by(Measurement.measure_time.desc())
-        .first()
-    )
-    if not latest:
-        return {"id_card": id_card, "is_custom": False, "source": "auto", "items": get_equipment_catalog(db)}
-    vitals = {
-        "gender": latest.gender,
-        "grip_strength": latest.grip_strength,
-        "chair_stand_time": latest.chair_stand_time,
-        "walking_time": latest.walking_time,
-        "smi": latest.smi,
-        "bp_status": bp_status(latest.systolic, latest.diastolic),
-        "sarcopenia_stage": latest.sarcopenia_stage,
+    const html = await res.text();
+    const w = window.open("", "_blank");
+    if (!w) {
+      alert("請允許瀏覽器彈出視窗後再試一次");
+      return;
     }
-    plan = build_intervention_for_case(db, id_card, vitals, stage=latest.sarcopenia_stage)
-    return {
-        "id_card": id_card,
-        "is_custom": False,
-        "source": "auto",
-        "items": plan.get("equipment") or [],
-        "user_name": latest.user_name,
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    if (doPrint) {
+      setTimeout(() => {
+        try {
+          w.focus();
+          w.print();
+        } catch (_) {}
+      }, 400);
     }
+  } catch (e) {
+    alert(e.message || "開啟報告失敗");
+  }
+}
 
+async function downloadCasePdf() {
+  if (!currentCaseId) return;
+  try {
+    await downloadBlob(
+      `/api/cases/${encodeURIComponent(currentCaseId)}/report.pdf`,
+      `babymomo_${currentCaseId}.pdf`
+    );
+  } catch (e) {
+    // 伺服器 PDF 失敗時：開啟報告並引導「另存為 PDF」
+    console.warn("PDF API failed, fallback print", e);
+    alert("將開啟報告視窗，請在列印對話框選擇「另存為 PDF」或「儲存為 PDF」");
+    await openCaseReport(true);
+  }
+}
 
-@app.put("/api/cases/{id_card}/equipment", tags=["Cases"])
-def put_case_equipment(
-    id_card: str,
-    payload: dict = Body(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """為單一個案儲存客製化運動輔具建議（覆蓋系統自動）。"""
-    if CaseEquipmentPlan is None:
-        raise HTTPException(500, "CaseEquipmentPlan 模型未載入")
-    items = _clean_equipment_items(payload.get("items"))
-    if not items:
-        raise HTTPException(400, "請至少保留一筆輔具建議")
-    note = (payload.get("note") or "").strip() or None
-    # 取姓名
-    latest = (
-        db.query(Measurement)
-        .filter(Measurement.id_card == id_card)
-        .order_by(Measurement.measure_time.desc())
-        .first()
-    )
-    user_name = (latest.user_name if latest else None) or payload.get("user_name")
-    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
-    value = json.dumps(items, ensure_ascii=False)
-    if row:
-        row.items_json = value
-        row.note = note
-        row.user_name = user_name
-        row.updated_by = current_user.username
-    else:
-        db.add(CaseEquipmentPlan(
-            id_card=id_card,
-            user_name=user_name,
-            items_json=value,
-            note=note,
-            updated_by=current_user.username,
-        ))
-    db.commit()
-    add_audit(db, current_user.username, "case_equipment_save", f"{id_card} count={len(items)}")
-    return {"ok": True, "id_card": id_card, "is_custom": True, "source": "custom", "items": items}
+async function downloadBackup() {
+  const msg = document.getElementById("backupMsg");
+  try {
+    if (msg) msg.textContent = "準備下載…";
+    await downloadBlob("/api/admin/backup", "babymomo_backup.db");
+    if (msg) msg.innerHTML = '<span class="text-success">備份已開始下載</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+    else alert(e.message);
+  }
+}
 
+function closeCase() {
+  document.getElementById("casePanel").style.display = "none";
+  currentCaseId = null;
+}
 
-@app.delete("/api/cases/{id_card}/equipment", tags=["Cases"])
-def delete_case_equipment(
-    id_card: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """刪除個案客製建議，恢復系統依數據自動產生。"""
-    if CaseEquipmentPlan is None:
-        raise HTTPException(500, "CaseEquipmentPlan 模型未載入")
-    row = db.query(CaseEquipmentPlan).filter(CaseEquipmentPlan.id_card == id_card).first()
-    if row:
-        db.delete(row)
-        db.commit()
-        add_audit(db, current_user.username, "case_equipment_reset", id_card)
-    return {"ok": True, "id_card": id_card, "is_custom": False, "source": "auto"}
+function printCaseReport() {
+  openCaseReport(true);
+}
 
+async function addCareNote() {
+  if (!currentCaseId) return;
+  const content = document.getElementById("careNoteInput").value.trim();
+  if (!content) {
+    alert("請輸入關懷內容");
+    return;
+  }
+  const next = document.getElementById("careNextDate").value || null;
+  try {
+    await api("/api/care-notes", {
+      method: "POST",
+      body: JSON.stringify({
+        id_card: currentCaseId,
+        content,
+        note_type: "followup",
+        next_follow_date: next,
+      }),
+    });
+    document.getElementById("careNoteInput").value = "";
+    openCase(currentCaseId);
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
-@app.get("/api/settings/equipment", tags=["Settings"])
-def get_equipment_settings(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """取得預設範本運動輔具建議（僅在「沒有個案客製」時使用）。"""
-    return {"items": get_equipment_catalog(db), "note": "此為預設範本；實際通報以個案客製為優先。"}
+async function doImport() {
+  const fileInput = document.getElementById("importFile");
+  if (!fileInput.files.length) {
+    alert("請選擇檔案");
+    return;
+  }
+  const fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+  const box = document.getElementById("importResult");
+  box.innerHTML = '<div class="alert alert-info">匯入中...</div>';
+  try {
+    const res = await fetch(API + "/api/import", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: fd,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "匯入失敗");
+    box.innerHTML = `
+      <div class="alert alert-success">
+        成功 <strong>${data.success}</strong> · 略過 <strong>${data.skipped}</strong> ·
+        自動刪除重複 <strong>${data.deleted || 0}</strong> · 失敗 <strong>${data.failed}</strong>
+      </div>
+      ${data.messages.length ? `<ul class="small text-danger">${data.messages.map((m) => `<li>${m}</li>`).join("")}</ul>` : ""}
+    `;
+    loadStats();
+    loadAlertCount();
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
+async function doDedupe() {
+  if (!confirm("將掃描並刪除重複檢測紀錄（同一人同一天只留最新一筆；完全相同的資料也會刪）。確定嗎？")) return;
+  const box = document.getElementById("importResult");
+  box.innerHTML = '<div class="alert alert-info">審核中...</div>';
+  try {
+    const data = await api("/api/dedupe", { method: "POST" });
+    const msgs = (data.messages || []).slice(0, 8).map(m => `<div class="small text-muted">${m}</div>`).join("");
+    box.innerHTML = `<div class="alert alert-success">已刪除重複 <strong>${data.deleted || 0}</strong> 筆${msgs}</div>`;
+    loadStats();
+    if (typeof loadDuplicates === "function") loadDuplicates();
+    if (typeof loadRecords === "function") loadRecords();
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
-@app.put("/api/settings/equipment", tags=["Settings"])
-def update_equipment_settings(
-    payload: dict = Body(...),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """管理員編輯運動輔具建議文字與觸發條件。"""
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list) or len(items) == 0:
-        raise HTTPException(400, "請提供至少一筆輔具建議")
-    cleaned = []
-    for i, it in enumerate(items):
-        if not isinstance(it, dict):
-            continue
-        name = str(it.get("name") or "").strip()
-        if not name:
-            continue
-        triggers = it.get("triggers") or ["always_abnormal"]
-        if not isinstance(triggers, list):
-            triggers = ["always_abnormal"]
-        cleaned.append({
-            "id": str(it.get("id") or f"eq_{i+1}"),
-            "name": name[:100],
-            "why": str(it.get("why") or "")[:500],
-            "how": str(it.get("how") or "")[:800],
-            "caution": str(it.get("caution") or "")[:400],
-            "triggers": [str(t) for t in triggers][:10],
-        })
-    if not cleaned:
-        raise HTTPException(400, "沒有有效的輔具項目")
-    row = db.query(SystemConfig).filter(SystemConfig.key == "equipment_catalog").first()
-    value = json.dumps(cleaned, ensure_ascii=False)
-    if row:
-        row.value = value
-        row.updated_by = current_user.username
-    else:
-        db.add(SystemConfig(key="equipment_catalog", value=value, updated_by=current_user.username))
-    db.commit()
-    add_audit(db, current_user.username, "update_equipment", f"count={len(cleaned)}")
-    return {"ok": True, "items": cleaned}
+function exportCSV() {
+  const q = document.getElementById("searchQ").value.trim();
+  const start = document.getElementById("recStart").value;
+  const end = document.getElementById("recEnd").value;
+  let url = API + "/api/export/csv?";
+  if (q) url += `q=${encodeURIComponent(q)}&`;
+  if (start) url += `start_date=${start}&`;
+  if (end) url += `end_date=${end}&`;
+  fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    .then((r) => r.blob())
+    .then((blob) => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "babymomo_export.csv";
+      a.click();
+    });
+}
 
+async function loadPeriodReport() {
+  const start = document.getElementById("repStart").value;
+  const end = document.getElementById("repEnd").value;
+  let url = "/api/report/period?";
+  if (start) url += `start_date=${start}&`;
+  if (end) url += `end_date=${end}&`;
+  const box = document.getElementById("periodReportBox");
+  try {
+    const r = await api(url);
+    const stages = r.stage_counts || {};
+    box.innerHTML = `
+      <h6 class="fw-bold">期間報表摘要</h6>
+      <p class="mb-1">區間：${r.start_date || "不限"} ～ ${r.end_date || "不限"}</p>
+      <p class="mb-1">檢測總筆數：<strong>${r.total_records}</strong></p>
+      <p class="mb-1">列冊人數：<strong>${r.unique_users}</strong></p>
+      <p class="mb-1">有異常人數：<strong class="text-danger">${r.abnormal_users}</strong></p>
+      <p class="mb-1">分期分布：
+        ${Object.keys(stages).map((k) => `${k} ${stages[k]}`).join("　") || "無"}
+      </p>
+      <p class="small text-muted mb-0">產生時間：${r.generated_at} · 操作者：${r.operator}</p>
+    `;
+  } catch (e) {
+    box.innerHTML = `<div class="text-danger">${e.message}</div>`;
+  }
+}
 
-@app.post("/api/settings/equipment/reset", tags=["Settings"])
-def reset_equipment_settings(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """還原為系統預設輔具建議。"""
-    defaults = get_default_equipment_catalog()
-    row = db.query(SystemConfig).filter(SystemConfig.key == "equipment_catalog").first()
-    value = json.dumps(defaults, ensure_ascii=False)
-    if row:
-        row.value = value
-        row.updated_by = current_user.username
-    else:
-        db.add(SystemConfig(key="equipment_catalog", value=value, updated_by=current_user.username))
-    db.commit()
-    add_audit(db, current_user.username, "reset_equipment", "defaults")
-    return {"ok": True, "items": defaults}
+async function loadAlertCount() {
+  try {
+    const data = await api("/api/alerts?only_unhandled=true&page_size=1");
+    const n = data.unhandled || 0;
+    ["alertBadge", "navAlertBadge"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (n > 0) {
+        el.style.display = "";
+        el.textContent = n > 99 ? "99+" : n;
+      } else {
+        el.style.display = "none";
+      }
+    });
+  } catch (e) { /* ignore */ }
+}
 
-
-# ========== Audit logs ==========
-@app.get("/api/audit-logs", tags=["Audit"])
-def list_audit_logs(
-    q: Optional[str] = None,
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    query = db.query(AuditLog)
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(
-            AuditLog.operator.ilike(like),
-            AuditLog.action.ilike(like),
-            AuditLog.details.ilike(like),
-        ))
-    total = query.count()
-    items = query.order_by(AuditLog.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return {
-        "total": total,
-        "page": page,
-        "items": [
-            {
-                "id": a.id,
-                "operator": a.operator,
-                "action": a.action,
-                "details": a.details,
-                "created_at": a.created_at.isoformat() if a.created_at else None,
-            }
-            for a in items
-        ],
+async function loadAlerts() {
+  const onlyUnhandled = document.getElementById("alertOnlyUnhandled")?.checked;
+  const aq = document.getElementById("alertQ")?.value?.trim() || "";
+  const aStart = document.getElementById("alertStart")?.value || "";
+  const aEnd = document.getElementById("alertEnd")?.value || "";
+  const aStage = document.getElementById("alertStage")?.value || "";
+  let url = "/api/alerts?page_size=100";
+  if (onlyUnhandled) url += "&only_unhandled=true";
+  if (aq) url += `&q=${encodeURIComponent(aq)}`;
+  if (aStart) url += `&start_date=${encodeURIComponent(aStart)}`;
+  if (aEnd) url += `&end_date=${encodeURIComponent(aEnd)}`;
+  if (aStage) url += `&stage=${encodeURIComponent(aStage)}`;
+  const box = document.getElementById("alertsList");
+  if (!box) return;
+  box.innerHTML = '<div class="text-muted">載入中...</div>';
+  try {
+    const data = await api(url);
+    loadAlertCount();
+    if (!data.items || data.items.length === 0) {
+      box.innerHTML = '<div class="alert alert-success">目前沒有異常通報。</div>';
+      return;
     }
+    box.innerHTML = data.items.map((a) => {
+      const sevClass = a.severity === "critical" ? "border-danger" : a.severity === "warning" ? "border-warning" : "border-info";
+      const sevBadge = a.severity === "critical" ? "bg-danger" : a.severity === "warning" ? "bg-warning text-dark" : "bg-info";
+      const v = a.vitals || {};
+      const g = (v.gender || "").toUpperCase();
+      const gripFail = v.grip_strength != null && ((g === "M" || g === "男") ? v.grip_strength < 28 : (g === "F" || g === "女") ? v.grip_strength < 18 : false);
+      const chairFail = v.chair_stand_time != null && v.chair_stand_time > 12;
+      const walkFail = v.walking_time != null && v.walking_time > 18;
+      const smiFail = v.smi != null && ((g === "M" || g === "男") ? v.smi < 7.0 : (g === "F" || g === "女") ? v.smi < 5.7 : false);
+      const bpFail = v.bp_status && v.bp_status !== "血壓正常" && v.bp_status !== "未量測";
+      const fatFail = v.body_fat != null && (
+        (g === "M" || g === "男") ? (v.body_fat < 10 || v.body_fat > 20) :
+        (g === "F" || g === "女") ? (v.body_fat < 23 || v.body_fat > 36.9) : false
+      );
+      const bmiFail = v.bmi != null && (v.bmi < 18.5 || v.bmi >= 24);
+      const handled = a.is_handled
+        ? `<span class="badge bg-success">已處理 by ${a.handled_by || "-"}</span>`
+        : `<button class="btn btn-sm btn-primary" onclick="handleAlert(${a.id})">標記已關懷</button>`;
+      return `<div class="card mb-3 ${sevClass}" style="border-left-width:5px">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-start gap-2 flex-wrap mb-2">
+            <div>
+              ${!a.is_handled ? `<input type="checkbox" class="form-check-input me-2 alert-check" value="${a.id}" />` : ""}
+              <span class="badge ${sevBadge} me-1">${a.severity === "critical" ? "緊急" : a.severity === "warning" ? "注意" : "提醒"}</span>
+              <span class="badge ${stageClass(a.sarcopenia_stage)}">${a.sarcopenia_stage || "-"}</span>
+              <strong class="ms-1">${a.user_name}</strong>
+              <span class="text-muted small">（${a.id_card}）</span>
+              <div class="small text-muted mt-1">檢測 ${v.measure_time || a.measure_time || fmtTaiwanTime(a.created_at) || "-"} · 異常 ${a.abnormal_count || 0} 項 · 標準依據：${g === "M" || g === "男" ? "男" : (g === "F" || g === "女" ? "女" : "")}${v.age != null ? " " + v.age + "歲" : ""}</div>
+            </div>
+            <div class="d-flex gap-2 flex-wrap">
+              <button class="btn btn-sm btn-outline-secondary" onclick="goCaseDetail('${a.id_card}')">看個案</button>
+              <button class="btn btn-sm btn-outline-success" onclick="pushAlertLine(${a.id})"><i class="bi bi-line"></i> 傳 LINE</button>
+              ${handled}
+            </div>
+          </div>
+          <div class="row g-2 mb-2">
+            ${vitalCard("握力", v.grip_strength, "kg", gripFail, g === "M" || g === "男" ? "標準 ≥ 28" : (g === "F" || g === "女" ? "標準 ≥ 18" : ""))}
+            ${vitalCard("五次坐站", v.chair_stand_time, "秒", chairFail, "標準 < 12")}
+            ${vitalCard("走路時間", v.walking_time, "秒", walkFail, "標準 < 20")}
+            ${vitalCard("骨骼肌量 SMI", v.smi, "kg/m²", smiFail, g === "M" || g === "男" ? "標準 ≥ 7.0" : (g === "F" || g === "女" ? "標準 ≥ 5.7" : ""))}
+            ${vitalCard("體脂率", v.body_fat, "%", fatFail, g === "M" || g === "男" ? "參考 10～20%" : (g === "F" || g === "女" ? "參考 23～36.9%" : ""))}
+            ${vitalCard("血壓", (v.systolic != null && v.diastolic != null) ? (v.systolic + "/" + v.diastolic) : "-", "mmHg", bpFail, "標準 100-120/60-80")}
+            ${vitalCard("脈搏", v.pulse, "bpm", false, "標準 60～100")}
+            ${vitalCard("BMI", v.bmi, "", bmiFail, "標準 18.5～24")}
+          </div>
+          <div class="bg-light rounded p-2 small" style="white-space:pre-line">${a.message || ""}</div>
+          ${a.handle_note ? `<div class="small text-success mt-2">處理備註：${a.handle_note}</div>` : ""}
+          ${renderInterventionPlan(a.intervention_plan)}
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
 
+function renderInterventionPlan(plan) {
+  if (!plan) return "";
+  const immediate = (plan.immediate || []).map((t) => `<li>${t}</li>`).join("");
+  const src = plan.equipment_source === "custom"
+    ? `<span class="badge bg-success ms-1">個案客製</span>`
+    : `<span class="badge bg-secondary ms-1">系統自動</span>`;
+  const equipment = (plan.equipment || []).map((eq) => `
+    <div class="border rounded p-2 mb-2 bg-white">
+      <div class="fw-semibold text-primary"><i class="bi bi-bicycle me-1"></i>${eq.name || ""}</div>
+      <div class="small mt-1"><span class="text-muted">為什麼：</span>${eq.why || ""}</div>
+      <div class="small"><span class="text-muted">怎麼用：</span>${eq.how || ""}</div>
+      <div class="small text-danger"><span class="text-muted">注意：</span>${eq.caution || ""}</div>
+    </div>
+  `).join("");
+  const protocol = (plan.protocol || []).map((t) => `<li>${t}</li>`).join("");
+  const care = (plan.care || []).map((t) => `<li>${t}</li>`).join("");
+  return `
+    <div class="mt-3 p-3 rounded border border-success-subtle" style="background:#f0fdf4">
+      <div class="fw-bold text-success mb-1"><i class="bi bi-clipboard2-pulse me-1"></i>${plan.title || "應對方案"}${src}</div>
+      <div class="small text-muted mb-2">${plan.brand_note || ""}</div>
+      <div class="small fw-semibold">立即處置</div>
+      <ul class="small mb-2">${immediate}</ul>
+      <div class="small fw-semibold">運動輔具建議 ${src}</div>
+      ${equipment || '<div class="small text-muted">尚無輔具建議</div>'}
+      <div class="small fw-semibold mt-2">訓練原則</div>
+      <ul class="small mb-2">${protocol}</ul>
+      <div class="small fw-semibold">關懷追蹤</div>
+      <ul class="small mb-0">${care}</ul>
+    </div>
+  `;
+}
 
+function vitalCard(label, value, unit, fail, hint) {
+  const shown = (value === undefined || value === null || value === "") ? "-" : value;
+  const cls = fail ? "metric-card fail" : "metric-card";
+  const badge = fail
+    ? `<span class="badge bg-danger ms-1" style="font-size:10px">未達標</span>`
+    : (value !== undefined && value !== null && value !== "" ? `<span class="badge bg-success ms-1" style="font-size:10px">達標</span>` : "");
+  const hintHtml = hint ? `<div class="small text-muted mt-1">${hint}</div>` : "";
+  return `<div class="col-6 col-md-3"><div class="${cls}" style="min-height:88px">
+    <div class="text-muted small d-flex align-items-center flex-wrap">${label}${badge}</div>
+    <div class="fw-semibold ${fail ? "text-danger" : ""}">${shown} <span class="small text-muted">${unit || ""}</span></div>
+    ${hintHtml}
+  </div></div>`;
+}
 
-@app.get("/api/standards", tags=["Standards"])
-def api_standards(
-    age: int = Query(..., ge=50, le=120),
-    gender: str = Query(..., description="M/F 或 男/女"),
-    current_user: User = Depends(get_current_user),
-):
-    """查詢指定年齡性別的標準值表。"""
-    try:
-        from standards import get_standards
-        std = get_standards(age, gender)
-    except Exception:
-        std = None
-    if not std:
-        raise HTTPException(404, "找不到對應標準值")
-    return std
+async function handleAlert(id) {
+  const note = prompt("處理說明（可留空）：", "已關懷個案並紀錄");
+  if (note === null) return;
+  try {
+    await api(`/api/alerts/${id}/handle?note=${encodeURIComponent(note)}`, { method: "POST" });
+    loadAlerts();
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
+async function batchHandleSelected() {
+  const ids = [...document.querySelectorAll(".alert-check:checked")].map((el) => parseInt(el.value, 10));
+  if (!ids.length) {
+    alert("請先勾選要處理的通報");
+    return;
+  }
+  const note = prompt("批次處理說明：", "批次標記已關懷") || "批次標記已關懷";
+  try {
+    const r = await api("/api/alerts/batch-handle", {
+      method: "POST",
+      body: JSON.stringify({ ids, note }),
+    });
+    alert(`已處理 ${r.handled} 筆`);
+    loadAlerts();
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
-@app.post("/api/feedback", tags=["Feedback"])
-def submit_feedback(
-    payload: FeedbackCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """意見／錯誤回饋：寫入資料庫並推播到既有官方 LINE。"""
-    if Feedback is None:
-        raise HTTPException(500, "Feedback 資料表尚未部署，請上傳最新 models.py")
-    cat = (payload.category or "suggestion").strip().lower()
-    if cat not in ("suggestion", "bug", "other"):
-        cat = "other"
-    cat_label = {"suggestion": "意見建議", "bug": "錯誤回報", "other": "其他"}.get(cat, "其他")
+async function pushAlertLine(id) {
+  try {
+    const r = await api(`/api/alerts/${id}/line`, { method: "POST" });
+    alert(r.ok ? "已送出 LINE" : (r.reason || r.error || "送出失敗"));
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
-    fb = Feedback(
-        category=cat,
-        title=(payload.title or "").strip() or None,
-        content=payload.content.strip(),
-        contact=(payload.contact or "").strip() or None,
-        page_url=(payload.page_url or "").strip() or None,
-        created_by=current_user.username,
-        created_by_name=current_user.display_name or current_user.username,
-    )
-    db.add(fb)
-    db.commit()
-    db.refresh(fb)
-
-    lines = [
-        f"【寶貝機 · {cat_label}】",
-        f"回報者：{fb.created_by_name}（{fb.created_by}）",
-    ]
-    if fb.title:
-        lines.append(f"標題：{fb.title}")
-    lines.append(f"內容：\n{fb.content}")
-    if fb.contact:
-        lines.append(f"聯絡方式：{fb.contact}")
-    if fb.page_url:
-        lines.append(f"頁面：{fb.page_url}")
-    lines.append(f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    text = "\n".join(lines)
-
-    result = send_line_text(text)
-    fb.line_sent = bool(result.get("ok"))
-    fb.line_result = json.dumps(result, ensure_ascii=False)[:2000]
-    db.commit()
-
-    add_audit(
-        db,
-        current_user.username,
-        "feedback",
-        f"id={fb.id} cat={cat} line_ok={result.get('ok')}",
-    )
-    return {
-        "ok": True,
-        "id": fb.id,
-        "line_sent": fb.line_sent,
-        "line": result,
-        "message": "已送出回饋" + ("，並已推播至 LINE" if fb.line_sent else "（LINE 推播未成功，已存檔）"),
+async function sendLineTest() {
+  const box = document.getElementById("lineTestResult");
+  if (box) box.innerHTML = '<div class="alert alert-info">傳送中...</div>';
+  try {
+    const r = await api("/api/alerts/line-test", { method: "POST" });
+    const preview = (r.preview || "").replace(/</g, "&lt;");
+    if (r.ok) {
+      box.innerHTML = `<div class="alert alert-success">已送到 LINE。<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
+    } else {
+      box.innerHTML = `<div class="alert alert-warning">模擬預覽<br>${r.reason || ""}<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
     }
+  } catch (e) {
+    if (box) box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
+async function sendDailySummary() {
+  try {
+    const r = await api("/api/alerts/daily-summary", { method: "POST" });
+    alert(r.ok ? "每日摘要已送到 LINE" : (r.reason || "送出失敗"));
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
-@app.get("/api/feedback", tags=["Feedback"])
-def list_feedback(
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    category: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("superadmin", "admin")),
-):
-    if Feedback is None:
-        raise HTTPException(500, "Feedback 資料表尚未部署，請上傳最新 models.py")
-    q = db.query(Feedback)
-    if category:
-        q = q.filter(Feedback.category == category)
-    total = q.count()
-    rows = (
-        q.order_by(desc(Feedback.created_at))
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return {
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [
-            {
-                "id": r.id,
-                "category": r.category,
-                "title": r.title,
-                "content": r.content,
-                "contact": r.contact,
-                "page_url": r.page_url,
-                "created_by": r.created_by,
-                "created_by_name": r.created_by_name,
-                "line_sent": r.line_sent,
-                "is_handled": r.is_handled,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ],
+function showCreateUser() {
+  const box = document.getElementById("createUserBox");
+  box.style.display = box.style.display === "none" ? "block" : "none";
+}
+
+async function loadUsers() {
+  try {
+    const users = await api("/api/users");
+    document.getElementById("usersBody").innerHTML = users.map((u) => `
+      <tr>
+        <td>${u.username}</td>
+        <td>${u.display_name}</td>
+        <td>${u.role}</td>
+        <td>${u.is_active ? '<span class="badge bg-success">啟用</span>' : '<span class="badge bg-secondary">停用</span>'}</td>
+        <td>
+          <button class="btn btn-sm btn-outline-secondary" onclick="toggleUser(${u.id}, ${u.is_active})">${u.is_active ? "停用" : "啟用"}</button>
+          <button class="btn btn-sm btn-outline-primary" onclick="resetUserPwd(${u.id}, '${u.username}')">重設密碼</button>
+        </td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("usersBody").innerHTML = `<tr><td colspan="5">${e.message}</td></tr>`;
+  }
+}
+
+async function createUser() {
+  const username = document.getElementById("nuUser").value.trim();
+  const password = document.getElementById("nuPass").value;
+  const display_name = document.getElementById("nuName").value.trim() || username;
+  const role = document.getElementById("nuRole").value;
+  try {
+    await api("/api/users", {
+      method: "POST",
+      body: JSON.stringify({ username, password, display_name, role }),
+    });
+    alert("建立成功");
+    loadUsers();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function toggleUser(id, active) {
+  try {
+    await api(`/api/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active: !active }),
+    });
+    loadUsers();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function resetUserPwd(id, username) {
+  const pwd = prompt(`重設 ${username} 的密碼：`);
+  if (!pwd) return;
+  try {
+    await api(`/api/users/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ password: pwd }),
+    });
+    alert("密碼已更新");
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function loadThresholds() {
+  try {
+    const t = await api("/api/settings/thresholds");
+    const fields = [
+      ["grip_male", "男性握力下限 (kg)"],
+      ["grip_female", "女性握力下限 (kg)"],
+      ["smi_male", "男性 SMI 下限"],
+      ["smi_female", "女性 SMI 下限"],
+      ["chair_stand", "五次坐站上限 (秒)"],
+      ["walking_time", "走路時間上限 (秒)"],
+      ["systolic_high", "收縮壓偏高 (mmHg)"],
+      ["diastolic_high", "舒張壓偏高 (mmHg)"],
+    ];
+    document.getElementById("thresholdForm").innerHTML = fields.map(([k, label]) => `
+      <div class="col-md-6">
+        <label class="form-label small">${label}</label>
+        <input type="number" step="0.1" class="form-control form-control-sm" id="th_${k}" value="${t[k]}" />
+      </div>
+    `).join("");
+  } catch (e) {
+    document.getElementById("thresholdMsg").innerHTML = `<div class="text-danger">${e.message}</div>`;
+  }
+}
+
+async function saveThresholds() {
+  const keys = ["grip_male", "grip_female", "smi_male", "smi_female", "chair_stand", "walking_time", "systolic_high", "diastolic_high"];
+  const body = {};
+  keys.forEach((k) => {
+    body[k] = parseFloat(document.getElementById("th_" + k).value);
+  });
+  try {
+    await api("/api/settings/thresholds", { method: "PUT", body: JSON.stringify(body) });
+    document.getElementById("thresholdMsg").innerHTML = '<div class="text-success">已儲存</div>';
+  } catch (e) {
+    document.getElementById("thresholdMsg").innerHTML = `<div class="text-danger">${e.message}</div>`;
+  }
+}
+
+let _eqItems = [];
+
+function _eqCardHtml(it, idx) {
+  const triggers = (it.triggers || []).join(",");
+  return `
+    <div class="border rounded p-3 bg-white" data-eq-idx="${idx}">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <strong class="text-primary">#${idx + 1}</strong>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeEquipmentRow(${idx})">刪除</button>
+      </div>
+      <div class="row g-2">
+        <div class="col-md-4">
+          <label class="form-label small">名稱</label>
+          <input class="form-control form-control-sm eq-name" value="${(it.name || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">觸發條件（逗號分隔）</label>
+          <input class="form-control form-control-sm eq-triggers" value="${triggers.replace(/"/g, "&quot;")}" placeholder="grip,chair,stage">
+        </div>
+        <div class="col-md-4">
+          <label class="form-label small">ID（選填）</label>
+          <input class="form-control form-control-sm eq-id" value="${(it.id || "").replace(/"/g, "&quot;")}">
+        </div>
+        <div class="col-12">
+          <label class="form-label small">為什麼</label>
+          <textarea class="form-control form-control-sm eq-why" rows="2">${it.why || ""}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">怎麼用</label>
+          <textarea class="form-control form-control-sm eq-how" rows="2">${it.how || ""}</textarea>
+        </div>
+        <div class="col-12">
+          <label class="form-label small">注意</label>
+          <textarea class="form-control form-control-sm eq-caution" rows="2">${it.caution || ""}</textarea>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderEquipmentEditor() {
+  const box = document.getElementById("equipmentEditor");
+  if (!box) return;
+  box.innerHTML = _eqItems.map((it, i) => _eqCardHtml(it, i)).join("") ||
+    '<div class="text-muted">尚無項目，請按「新增一筆」</div>';
+}
+
+async function loadEquipment() {
+  const msg = document.getElementById("equipmentMsg");
+  try {
+    const data = await api("/api/settings/equipment");
+    _eqItems = data.items || [];
+    renderEquipmentEditor();
+    if (msg) msg.textContent = "";
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+function _collectEquipmentFromDom() {
+  const cards = document.querySelectorAll("#equipmentEditor [data-eq-idx]");
+  const items = [];
+  cards.forEach((card) => {
+    const name = card.querySelector(".eq-name")?.value?.trim() || "";
+    if (!name) return;
+    const triggersRaw = card.querySelector(".eq-triggers")?.value || "";
+    const triggers = triggersRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    items.push({
+      id: card.querySelector(".eq-id")?.value?.trim() || `eq_${items.length + 1}`,
+      name,
+      why: card.querySelector(".eq-why")?.value || "",
+      how: card.querySelector(".eq-how")?.value || "",
+      caution: card.querySelector(".eq-caution")?.value || "",
+      triggers: triggers.length ? triggers : ["always_abnormal"],
+    });
+  });
+  return items;
+}
+
+function addEquipmentRow() {
+  _eqItems = _collectEquipmentFromDom();
+  _eqItems.push({
+    id: `eq_${Date.now()}`,
+    name: "新輔具",
+    why: "",
+    how: "",
+    caution: "",
+    triggers: ["always_abnormal"],
+  });
+  renderEquipmentEditor();
+}
+
+function removeEquipmentRow(idx) {
+  _eqItems = _collectEquipmentFromDom();
+  _eqItems.splice(idx, 1);
+  renderEquipmentEditor();
+}
+
+async function saveEquipment() {
+  const msg = document.getElementById("equipmentMsg");
+  const items = _collectEquipmentFromDom();
+  if (!items.length) {
+    if (msg) msg.innerHTML = '<span class="text-danger">請至少保留一筆</span>';
+    return;
+  }
+  try {
+    const data = await api("/api/settings/equipment", {
+      method: "PUT",
+      body: JSON.stringify({ items }),
+    });
+    _eqItems = data.items || items;
+    renderEquipmentEditor();
+    if (msg) msg.innerHTML = '<span class="text-success">已儲存，異常通報會套用最新內容</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function resetEquipment() {
+  if (!confirm("確定還原為系統預設輔具建議？")) return;
+  const msg = document.getElementById("equipmentMsg");
+  try {
+    const data = await api("/api/settings/equipment/reset", { method: "POST", body: "{}" });
+    _eqItems = data.items || [];
+    renderEquipmentEditor();
+    if (msg) msg.innerHTML = '<span class="text-success">已還原預設</span>';
+  } catch (e) {
+    if (msg) msg.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
+
+async function loadAudit() {
+  const q = document.getElementById("auditQ").value.trim();
+  let url = "/api/audit-logs?page_size=100";
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  try {
+    const data = await api(url);
+    document.getElementById("auditBody").innerHTML = (data.items || []).map((a) => `
+      <tr>
+        <td class="small">${a.created_at ? a.created_at.replace("T", " ").slice(0, 19) : "-"}</td>
+        <td>${a.operator || "-"}</td>
+        <td>${a.action || "-"}</td>
+        <td class="small">${a.details || ""}</td>
+      </tr>
+    `).join("") || '<tr><td colspan="4">無資料</td></tr>';
+  } catch (e) {
+    document.getElementById("auditBody").innerHTML = `<tr><td colspan="4">${e.message}</td></tr>`;
+  }
+}
+
+async function loadIssueCount() {
+  if (!isAdmin()) return;
+  try {
+    const data = await api("/api/admin/issues?status=open&page_size=1");
+    const n = data.total || 0;
+    const badge = document.getElementById("issueBadge");
+    if (badge) {
+      badge.style.display = n > 0 ? "" : "none";
+      badge.textContent = n > 99 ? "99+" : String(n);
     }
+  } catch (_) { /* ignore */ }
+}
 
-
-def _issue_fingerprint(issue_type: str, related_id: str = "", title: str = "") -> str:
-    return f"{issue_type}|{related_id}|{title}"[:120]
-
-
-def _upsert_open_issue(
-    db: Session,
-    issue_type: str,
-    title: str,
-    detail: str = "",
-    related_id: str = "",
-    severity: str = "warning",
-    auto_fixed: bool = False,
-    status: str = "open",
-):
-    if SystemIssue is None:
-        return None
-    fp = _issue_fingerprint(issue_type, related_id, title)
-    existing = (
-        db.query(SystemIssue)
-        .filter(SystemIssue.fingerprint == fp, SystemIssue.status == "open")
-        .first()
-    )
-    if existing:
-        existing.detail = detail
-        existing.severity = severity
-        existing.auto_fixed = auto_fixed
-        if status != "open":
-            existing.status = status
-            existing.resolved_at = datetime.now(timezone.utc)
-            existing.resolved_by = "system"
-        return existing
-    row = SystemIssue(
-        issue_type=issue_type,
-        severity=severity,
-        title=title,
-        detail=detail,
-        related_id=related_id or None,
-        fingerprint=fp,
-        auto_fixed=auto_fixed,
-        status=status,
-        resolved_by="system" if status != "open" else None,
-        resolved_at=datetime.now(timezone.utc) if status != "open" else None,
-    )
-    db.add(row)
-    return row
-
-
-def run_self_heal(db: Session, trigger: str = "manual") -> dict:
-    """
-    每日／手動系統健檢：
-    - 可自動排除：重複資料、缺 BMI、分期不一致、性別正規化
-    - 無法排除：缺身分證／姓名、孤懸通報等 → 開立待辦給管理員
-    """
-    summary = {
-        "trigger": trigger,
-        "ran_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "auto_fixed": [],
-        "opened": [],
-        "counts": {},
+async function loadIssues() {
+  const box = document.getElementById("issuesList");
+  const sum = document.getElementById("selfHealSummary");
+  if (!box) return;
+  box.innerHTML = '<div class="text-muted">載入中...</div>';
+  try {
+    // 狀態 + 必要時自動每日健檢
+    const st = await api("/api/admin/self-heal/status");
+    if (sum) {
+      const last = st.last || {};
+      const counts = last.counts || {};
+      let html = `上次健檢：<strong>${last.ran_at || "尚未執行"}</strong>`;
+      if (st.auto_ran_now) html += `　<span class="text-success">（剛剛已自動執行每日健檢）</span>`;
+      html += `<br>自動排除項目：${counts.auto_fixed_n ?? "-"}　待處理：<strong class="text-danger">${st.open_issues ?? 0}</strong>`;
+      if (counts.duplicates_deleted) html += `　重複已刪：${counts.duplicates_deleted}`;
+      if (counts.bmi_fixed) html += `　BMI 補算：${counts.bmi_fixed}`;
+      if (counts.stage_fixed) html += `　分期重算：${counts.stage_fixed}`;
+      sum.innerHTML = html;
     }
-    if SystemIssue is None:
-        summary["error"] = "SystemIssue 模型未部署"
-        return summary
-
-    # 1) 重複檢測資料
-    try:
-        deleted, names = purge_duplicate_measurements(db)
-        if deleted:
-            msg = f"已自動刪除 {deleted} 筆重複檢測；例：{', '.join(names[:5])}"
-            summary["auto_fixed"].append({"type": "duplicate", "detail": msg})
-            _upsert_open_issue(
-                db, "duplicate", f"已自動排除 {deleted} 筆重複資料", msg,
-                related_id="batch", severity="info", auto_fixed=True, status="fixed",
-            )
-        summary["counts"]["duplicates_deleted"] = deleted
-    except Exception as e:
-        summary["opened"].append({"type": "duplicate_error", "detail": str(e)})
-        _upsert_open_issue(db, "heal_error", "重複資料排除失敗", str(e), severity="error")
-
-    # 2) 補算 BMI、重算分期／異常數
-    fixed_bmi = 0
-    fixed_stage = 0
-    try:
-        rows = db.query(Measurement).order_by(Measurement.id.asc()).limit(5000).all()
-        for rec in rows:
-            changed = False
-            # BMI
-            if (rec.bmi is None or rec.bmi == 0) and rec.height and rec.weight:
-                try:
-                    new_bmi = calc_bmi(rec.height, rec.weight)
-                    if new_bmi:
-                        rec.bmi = new_bmi
-                        fixed_bmi += 1
-                        changed = True
-                except Exception:
-                    pass
-            # 性別正規化
-            g = (rec.gender or "").strip().upper()
-            if g in ("男", "MALE"):
-                rec.gender = "M"
-                changed = True
-            elif g in ("女", "FEMALE"):
-                rec.gender = "F"
-                changed = True
-            elif g not in ("M", "F") and g:
-                _upsert_open_issue(
-                    db, "invalid_gender",
-                    f"性別無法辨識：{rec.user_name or ''}（{rec.id_card}）",
-                    f"目前值={rec.gender}，紀錄 id={rec.id}",
-                    related_id=str(rec.id),
-                    severity="warning",
-                )
-            # 重算分期
-            try:
-                stage, abn, status_text = judge_sarcopenia(
-                    rec.gender, rec.grip_strength, rec.chair_stand_time,
-                    rec.walking_time, rec.smi, age=rec.age,
-                )
-                if stage != (rec.sarcopenia_stage or "") or abn != (rec.abnormal_count or 0):
-                    rec.sarcopenia_stage = stage
-                    rec.abnormal_count = abn
-                    rec.status = status_text
-                    fixed_stage += 1
-                    changed = True
-            except Exception:
-                pass
-            # 缺關鍵欄位
-            if not (rec.id_card or "").strip():
-                _upsert_open_issue(
-                    db, "missing_id_card",
-                    f"檢測紀錄缺身分證（id={rec.id}）",
-                    f"姓名={rec.user_name} 時間={rec.measure_time}",
-                    related_id=str(rec.id),
-                    severity="error",
-                )
-            if not (rec.user_name or "").strip():
-                _upsert_open_issue(
-                    db, "missing_name",
-                    f"檢測紀錄缺姓名（{rec.id_card or rec.id}）",
-                    f"紀錄 id={rec.id}",
-                    related_id=str(rec.id),
-                    severity="warning",
-                )
-        if fixed_bmi or fixed_stage:
-            db.commit()
-        if fixed_bmi:
-            summary["auto_fixed"].append({"type": "bmi", "detail": f"補算 BMI {fixed_bmi} 筆"})
-            _upsert_open_issue(
-                db, "bmi_fix", f"已自動補算 BMI {fixed_bmi} 筆", "",
-                auto_fixed=True, status="fixed", severity="info",
-            )
-        if fixed_stage:
-            summary["auto_fixed"].append({"type": "stage", "detail": f"重算分期／異常 {fixed_stage} 筆"})
-            _upsert_open_issue(
-                db, "stage_fix", f"已自動重算分期 {fixed_stage} 筆", "",
-                auto_fixed=True, status="fixed", severity="info",
-            )
-        summary["counts"]["bmi_fixed"] = fixed_bmi
-        summary["counts"]["stage_fixed"] = fixed_stage
-    except Exception as e:
-        summary["opened"].append({"type": "recalc_error", "detail": str(e)})
-        _upsert_open_issue(db, "heal_error", "BMI／分期重算失敗", str(e), severity="error")
-
-    # 3) 孤懸通報（measurement_id 指向不存在的紀錄）
-    try:
-        orphan = 0
-        alerts = db.query(Alert).filter(Alert.measurement_id.isnot(None)).limit(2000).all()
-        for a in alerts:
-            exists = db.query(Measurement.id).filter(Measurement.id == a.measurement_id).first()
-            if not exists:
-                orphan += 1
-                _upsert_open_issue(
-                    db, "orphan_alert",
-                    f"孤懸異常通報：{a.user_name}（{a.id_card}）",
-                    f"alert_id={a.id} measurement_id={a.measurement_id} 已不存在，請確認是否標記處理或刪除",
-                    related_id=str(a.id),
-                    severity="warning",
-                )
-        summary["counts"]["orphan_alerts"] = orphan
-    except Exception as e:
-        _upsert_open_issue(db, "heal_error", "孤懸通報檢查失敗", str(e), severity="error")
-
-    # 記錄本次執行時間
-    try:
-        row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
-        val = json.dumps(summary, ensure_ascii=False)[:4000]
-        if row:
-            row.value = val
-            row.updated_by = "system"
-        else:
-            db.add(SystemConfig(key="last_self_heal", value=val, updated_by="system"))
-        db.commit()
-    except Exception:
-        try:
-            db.commit()
-        except Exception:
-            db.rollback()
-
-    open_count = 0
-    if SystemIssue is not None:
-        open_count = db.query(SystemIssue).filter(SystemIssue.status == "open").count()
-    summary["counts"]["open_issues"] = open_count
-    summary["counts"]["auto_fixed_n"] = len(summary["auto_fixed"])
-    return summary
-
-
-def maybe_daily_self_heal(db: Session) -> Optional[dict]:
-    """若距上次執行超過 24 小時則自動跑一次。"""
-    try:
-        row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
-        if row and row.value:
-            try:
-                prev = json.loads(row.value)
-                ran = prev.get("ran_at") or ""
-                if ran:
-                    last = datetime.strptime(ran[:19], "%Y-%m-%d %H:%M:%S")
-                    if (datetime.now() - last).total_seconds() < 24 * 3600:
-                        return None
-            except Exception:
-                pass
-        return run_self_heal(db, trigger="daily_auto")
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.post("/api/admin/self-heal", tags=["System"])
-def api_run_self_heal(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """手動執行系統健檢與自動排除。"""
-    result = run_self_heal(db, trigger=f"manual:{current_user.username}")
-    add_audit(db, current_user.username, "self_heal", json.dumps(result.get("counts", {}), ensure_ascii=False))
-    return result
-
-
-@app.get("/api/admin/self-heal/status", tags=["System"])
-def api_self_heal_status(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    """查詢上次健檢結果，並在超過 24 小時時自動再跑一次。"""
-    auto = maybe_daily_self_heal(db)
-    row = db.query(SystemConfig).filter(SystemConfig.key == "last_self_heal").first()
-    last = None
-    if row and row.value:
-        try:
-            last = json.loads(row.value)
-        except Exception:
-            last = {"raw": row.value}
-    open_count = 0
-    if SystemIssue is not None:
-        open_count = db.query(SystemIssue).filter(SystemIssue.status == "open").count()
-    return {
-        "last": last,
-        "auto_ran_now": auto is not None,
-        "auto_result": auto,
-        "open_issues": open_count,
+    const status = document.getElementById("issueStatus")?.value || "open";
+    const data = await api(`/api/admin/issues?status=${encodeURIComponent(status)}&page_size=100`);
+    loadIssueCount();
+    if (!data.items || !data.items.length) {
+      box.innerHTML = '<div class="alert alert-success mb-0">目前沒有此狀態的問題。</div>';
+      return;
     }
+    box.innerHTML = data.items.map((it) => {
+      const sev = it.severity === "error" ? "danger" : it.severity === "info" ? "info" : "warning";
+      const actions = it.status === "open"
+        ? `<div class="d-flex gap-2 mt-2">
+            <button class="btn btn-sm btn-success" onclick="resolveIssue(${it.id},'fixed')">標記已排除</button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="resolveIssue(${it.id},'ignored')">忽略</button>
+          </div>`
+        : `<div class="small text-muted mt-1">狀態：${it.status}${it.resolved_by ? " · by " + it.resolved_by : ""}${it.resolve_note ? " · " + it.resolve_note : ""}</div>`;
+      return `<div class="card border-${sev}">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between gap-2 flex-wrap">
+            <div>
+              <span class="badge bg-${sev} me-1">${it.severity || "warning"}</span>
+              <span class="badge bg-light text-dark border me-1">${it.issue_type || ""}</span>
+              <strong>${it.title || ""}</strong>
+              <div class="small text-muted">${it.created_at ? it.created_at.replace("T", " ").slice(0, 19) : ""}${it.related_id ? " · 關聯 " + it.related_id : ""}</div>
+            </div>
+            ${it.auto_fixed ? '<span class="badge bg-success align-self-start">已自動排除</span>' : ""}
+          </div>
+          ${it.detail ? `<div class="small mt-1" style="white-space:pre-wrap">${it.detail}</div>` : ""}
+          ${actions}
+        </div>
+      </div>`;
+    }).join("");
+  } catch (e) {
+    box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
+  }
+}
 
-
-@app.get("/api/admin/issues", tags=["System"])
-def list_system_issues(
-    status: str = Query("open"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    if SystemIssue is None:
-        raise HTTPException(500, "SystemIssue 尚未部署，請上傳最新 models.py")
-    # 進入此頁時順便觸發每日健檢
-    maybe_daily_self_heal(db)
-    q = db.query(SystemIssue)
-    if status and status != "all":
-        q = q.filter(SystemIssue.status == status)
-    total = q.count()
-    rows = (
-        q.order_by(SystemIssue.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
-    return {
-        "total": total,
-        "page": page,
-        "items": [
-            {
-                "id": r.id,
-                "issue_type": r.issue_type,
-                "severity": r.severity,
-                "title": r.title,
-                "detail": r.detail,
-                "related_id": r.related_id,
-                "auto_fixed": r.auto_fixed,
-                "status": r.status,
-                "resolved_by": r.resolved_by,
-                "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
-                "resolve_note": r.resolve_note,
-                "created_at": r.created_at.isoformat() if r.created_at else None,
-            }
-            for r in rows
-        ],
+async function runSelfHealNow() {
+  const sum = document.getElementById("selfHealSummary");
+  if (sum) sum.innerHTML = "健檢執行中…";
+  try {
+    const result = await api("/api/admin/self-heal", { method: "POST", body: "{}" });
+    await loadIssues();
+    if (sum && result) {
+      const c = result.counts || {};
+      sum.innerHTML = `手動健檢完成（${result.ran_at || ""}）。自動排除 ${c.auto_fixed_n ?? 0} 類，待處理 ${c.open_issues ?? 0} 筆。`;
     }
+  } catch (e) {
+    if (sum) sum.innerHTML = `<span class="text-danger">${e.message}</span>`;
+  }
+}
 
+async function resolveIssue(id, action) {
+  const note = action === "ignored" ? (prompt("忽略原因（可留空）：", "") ?? null) : (prompt("處理說明（可留空）：", "已確認排除") ?? null);
+  if (note === null) return;
+  try {
+    await api(`/api/admin/issues/${id}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ action, note }),
+    });
+    loadIssues();
+  } catch (e) {
+    alert(e.message);
+  }
+}
 
-@app.post("/api/admin/issues/{issue_id}/resolve", tags=["System"])
-def resolve_system_issue(
-    issue_id: int,
-    payload: dict = Body(default={}),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_roles("admin", "superadmin")),
-):
-    if SystemIssue is None:
-        raise HTTPException(500, "SystemIssue 尚未部署")
-    row = db.query(SystemIssue).get(issue_id)
-    if not row:
-        raise HTTPException(404, "找不到此問題")
-    action = (payload.get("action") or "fixed").lower()
-    if action not in ("fixed", "ignored"):
-        action = "fixed"
-    row.status = action if action == "ignored" else "fixed"
-    if action == "ignored":
-        row.status = "ignored"
-    row.resolved_by = current_user.username
-    row.resolved_at = datetime.now(timezone.utc)
-    row.resolve_note = (payload.get("note") or "").strip() or None
-    db.commit()
-    add_audit(db, current_user.username, "resolve_issue", f"id={issue_id} status={row.status}")
-    return {"ok": True, "id": issue_id, "status": row.status}
+(async function init() {
+  if (token) {
+    try {
+      currentUser = await api("/api/auth/me");
+      enterApp();
+      return;
+    } catch {
+      doLogout();
+    }
+  }
+})();
 
+document.getElementById("loginPassword")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doLogin();
+});
 
-@app.get("/api/health", tags=["System"])
-def health():
-    return {"status": "ok", "service": "寶貝機體適能檢測系統", "version": "2.0.0"}
-
-
-# Frontend static（明確提供 index.html / app.js，避免 mount 造成 404 無法登入）
-_base = os.path.dirname(os.path.abspath(__file__))
-_candidates = [
-    _base,
-    os.path.join(_base, "frontend"),
-    os.path.join(_base, "..", "frontend"),
-]
-frontend_path = None
-for p in _candidates:
-    if os.path.isfile(os.path.join(p, "index.html")):
-        frontend_path = p
-        break
-
-
-def _frontend_file(*names: str) -> Optional[str]:
-    if not frontend_path:
-        return None
-    for name in names:
-        path = os.path.join(frontend_path, name)
-        if os.path.isfile(path):
-            return path
-    return None
-
-
-@app.get("/")
-def home_page():
-    path = _frontend_file("index.html")
-    if path:
-        return FileResponse(path, media_type="text/html; charset=utf-8")
-    return HTMLResponse(
-        "<h3>Frontend not found</h3><p>請確認 backend 資料夾內有 index.html 與 app.js</p>",
-        status_code=404,
-    )
-
-
-@app.get("/app.js")
-def serve_app_js():
-    path = _frontend_file("app.js")
-    if path:
-        return FileResponse(path, media_type="application/javascript; charset=utf-8")
-    raise HTTPException(404, "app.js not found — 請將 app.js 放到 backend 目錄")
-
-
-@app.get("/index.html")
-def serve_index_html():
-    path = _frontend_file("index.html")
-    if path:
-        return FileResponse(path, media_type="text/html; charset=utf-8")
-    raise HTTPException(404, "index.html not found")
-
-
-# 其他靜態資源（若有 css/圖片）
-if frontend_path:
-    try:
-        app.mount("/static", StaticFiles(directory=frontend_path), name="frontend_static")
-    except Exception:
-        pass
+async function submitFeedback() {
+  const catEl = document.querySelector('input[name="fbCat"]:checked');
+  const category = catEl ? catEl.value : "suggestion";
+  const title = (document.getElementById("fbTitle")?.value || "").trim();
+  const content = (document.getElementById("fbContent")?.value || "").trim();
+  const contact = (document.getElementById("fbContact")?.value || "").trim();
+  const statusEl = document.getElementById("fbStatus");
+  const btn = document.getElementById("fbSubmitBtn");
+  if (!content || content.length < 3) {
+    if (statusEl) statusEl.textContent = "請至少填寫 3 個字的內容";
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = "傳送中…";
+  try {
+    const res = await api("/api/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        category,
+        title: title || null,
+        content,
+        contact: contact || null,
+        page_url: location.href,
+      }),
+    });
+    if (statusEl) {
+      statusEl.textContent = res.message || "已送出";
+      statusEl.className = res.line_sent ? "small text-success" : "small text-warning";
+    }
+    if (document.getElementById("fbContent")) document.getElementById("fbContent").value = "";
+    if (document.getElementById("fbTitle")) document.getElementById("fbTitle").value = "";
+  } catch (e) {
+    if (statusEl) {
+      statusEl.textContent = e.message || "送出失敗";
+      statusEl.className = "small text-danger";
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
