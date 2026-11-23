@@ -897,14 +897,19 @@ if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
 if (box) {
   box.innerHTML = metrics.map((m) => {
   let note = m.note || "";
-// 空白欄位加上備註
+let noteHtml = "";
+
 if (m.val == null || m.val === "" || m.val === "-") {
-  note = "未量測或儀器未偵測到";
+  noteHtml = `<input class="form-control form-control-sm mt-1" placeholder="輸入空白原因..." 
+    onchange="saveMetricNote('${currentCaseId}', '${m.label}', this.value)" 
+    style="font-size:12px">`;
 } else if (m.std != null && m.val != null && !note) {
   const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
   note = pass ? "達標" : "未達標";
+  noteHtml = `<div class="small ${note.includes("未") ? "text-danger" : "text-success"}">${note}</div>`;
+} else if (note) {
+  noteHtml = `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>`;
 }
-    const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
     return `<div class="col-6 col-md-3"><div class="photo-metric">
       <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
       <div class="val">${m.val != null ? m.val : "-"} <small class="fs-6 text-muted fw-normal">${m.unit || ""}</small></div>
