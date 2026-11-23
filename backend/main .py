@@ -2438,6 +2438,7 @@ def create_care_note(
 
 # ========== Alerts ==========
 @app.get("/api/alerts", tags=["Alerts"])
+@app.get("/api/alerts", tags=["Alerts"])
 def list_alerts(
     only_unread: bool = False,
     only_unhandled: bool = False,
@@ -2456,9 +2457,9 @@ def list_alerts(
     if role not in ("superadmin", "admin", "company_admin"):
         query = query.filter(Alert.target_roles.ilike(f"%{role}%"))
     if only_unread:
-        query = query.filter(Alert.is_read == False)  # noqa: E712
+        query = query.filter(Alert.is_read == False)
     if only_unhandled:
-        query = query.filter(Alert.is_handled == False)  # noqa: E712
+        query = query.filter(Alert.is_handled == False)
     if q:
         like = f"%{q.strip()}%"
         query = query.filter(or_(Alert.id_card.ilike(like), Alert.user_name.ilike(like)))
@@ -2468,20 +2469,77 @@ def list_alerts(
         query = query.filter(Alert.created_at <= end_date + " 23:59:59")
     if stage:
         query = query.filter(Alert.sarcopenia_stage == stage)
+
     total = query.count()
     items = query.order_by(Alert.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    # 計數用獨立輕量查詢，避免與分頁 filter 互相拖慢
-    unread = db.query(Alert).filter(Alert.is_read == False).count()  # noqa: E712
-    unhandled = db.query(Alert).filter(Alert.is_handled == False).count()  # noqa: E712
+
+    # ===== 批次載入 Measurement，避免 N+1 =====
+    meas_ids = [a.measurement_id for a in items if a.measurement_id]
+    id_cards = list({a.id_card for a in items if a.id_card})
+
+    meas_by_id = {}
+    if meas_ids:
+        for m in db.query(Measurement).filter(Measurement.id.in_(meas_ids)).all():
+            meas_by_id[m.id] = m
+
+    # 沒有 measurement_id 的，批次取每個 id_card 最新一筆
+    latest_by_card = {}
+    if id_cards:
+        # 簡單高效：用子查詢或直接多次但限縮（資料量不大時可接受）
+        for card in id_cards:
+            if any(m.id_card == card for m in meas_by_id.values()):
+                continue
+            latest = (
+                db.query(Measurement)
+                .filter(Measurement.id_card == card)
+                .order_by(Measurement.measure_time.desc())
+                .first()
+            )
+            if latest:
+                latest_by_card[card] = latest
+
+    def get_vitals(a: Alert) -> dict:
+        rec = None
+        if a.measurement_id and a.measurement_id in meas_by_id:
+            rec = meas_by_id[a.measurement_id]
+        elif a.id_card in latest_by_card:
+            rec = latest_by_card[a.id_card]
+        if not rec:
+            return {}
+        return {
+            "gender": rec.gender,
+            "age": rec.age,
+            "height": rec.height,
+            "weight": rec.weight,
+            "bmi": rec.bmi,
+            "body_fat": rec.body_fat,
+            "smi": rec.smi,
+            "systolic": rec.systolic,
+            "diastolic": rec.diastolic,
+            "pulse": rec.pulse,
+            "grip_strength": rec.grip_strength,
+            "chair_stand_time": rec.chair_stand_time,
+            "walking_time": rec.walking_time,
+            "bp_status": bp_status(rec.systolic, rec.diastolic),
+            "measure_time": rec.measure_time,
+        }
+
+    # 計數獨立查詢
+    unread = db.query(Alert).filter(Alert.is_read == False).count()
+    unhandled = db.query(Alert).filter(Alert.is_handled == False).count()
+
+    result_items = []
+    for a in items:
+        d = _alert_item_dict(db, a, include_plan=False)  # 列表強制不帶 plan
+        d["vitals"] = get_vitals(a)
+        result_items.append(d)
+
     return {
         "total": total,
         "unread": unread,
         "unhandled": unhandled,
         "page": page,
-        "items": [
-            _alert_item_dict(db, a, include_plan=include_plan)
-            for a in items
-        ],
+        "items": result_items,
     }
 
 
