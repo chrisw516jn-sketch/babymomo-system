@@ -896,11 +896,14 @@ if (btnPrint) btnPrint.onclick = () => { openCaseReport(true); };
  const box = document.getElementById("caseMetrics");
 if (box) {
   box.innerHTML = metrics.map((m) => {
-    let note = m.note || "";
-    if (m.std != null && m.val != null && !note) {
-      const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
-      note = pass ? "達標" : "未達標";
-    }
+  let note = m.note || "";
+// 空白欄位加上備註
+if (m.val == null || m.val === "" || m.val === "-") {
+  note = "未量測或儀器未偵測到";
+} else if (m.std != null && m.val != null && !note) {
+  const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
+  note = pass ? "達標" : "未達標";
+}
     const noteHtml = note ? `<div class="small ${String(note).includes("未")||String(note).includes("偏高") ? "text-danger" : "text-success"}">${note}</div>` : "";
     return `<div class="col-6 col-md-3"><div class="photo-metric">
       <div class="d-flex justify-content-between small text-muted"><span>${m.icon} ${m.label}</span><span>${m.hint || ""}</span></div>
