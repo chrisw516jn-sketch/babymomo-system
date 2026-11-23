@@ -731,6 +731,8 @@ async function loadExercises() {
     tbody.innerHTML = "";
     (data.items || []).forEach((r) => {
       const tr = document.createElement("tr");
+      tr.style.cursor = "pointer";
+      tr.onclick = () => showExerciseDetail(r);
       tr.innerHTML = `
         <td class="small">${r.measure_time || r.measure_date || "-"}</td>
         <td class="text-primary small">${r.id_card || "-"}</td>
@@ -748,12 +750,12 @@ async function loadExercises() {
       tbody.appendChild(tr);
     });
     const info = document.getElementById("exPagerInfo");
-   if (info) {
-  const totalPages = Math.max(1, Math.ceil((data.total || 0) / PAGE_SIZE));
-  info.innerHTML = `共 ${data.total || 0} 筆 · 第 ${data.page || 1} / ${totalPages} 頁
-    <button class="btn btn-sm btn-outline-secondary ms-2" onclick="exPage=Math.max(1,exPage-1);loadExercises()" ${exPage<=1?"disabled":""}>上一頁</button>
-    <button class="btn btn-sm btn-outline-secondary ms-1" onclick="exPage=Math.min(${totalPages},exPage+1);loadExercises()" ${exPage>=totalPages?"disabled":""}>下一頁</button>`;
-}
+    if (info) {
+      const totalPages = Math.max(1, Math.ceil((data.total || 0) / PAGE_SIZE));
+      info.innerHTML = `共 ${data.total || 0} 筆 · 第 ${data.page || 1} / ${totalPages} 頁
+        <button class="btn btn-sm btn-outline-secondary ms-2" onclick="exPage=Math.max(1,exPage-1);loadExercises()" ${exPage<=1?"disabled":""}>上一頁</button>
+        <button class="btn btn-sm btn-outline-secondary ms-1" onclick="exPage=Math.min(${totalPages},exPage+1);loadExercises()" ${exPage>=totalPages?"disabled":""}>下一頁</button>`;
+    }
   } catch (e) {
     const msg = document.getElementById("exMsg");
     if (msg) msg.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
@@ -761,6 +763,46 @@ async function loadExercises() {
   }
 }
 
+// 新增：顯示運動紀錄詳情
+function showExerciseDetail(r) {
+  const box = document.getElementById("exMsg") || document.getElementById("exBody");
+  if (!box) return;
+  const typeLabel = EX_TYPE_LABEL[r.exercise_type] || r.exercise_type || "-";
+  box.innerHTML = `
+    <div class="card mb-3 border-primary">
+      <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-bicycle me-1"></i>運動紀錄詳情</span>
+        <button class="btn btn-sm btn-light" onclick="loadExercises()">返回列表</button>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-md-6">
+            <div class="mb-2"><strong>個案姓名：</strong>${r.user_name || "-"}</div>
+            <div class="mb-2"><strong>身分證：</strong>${r.id_card || "-"}</div>
+            <div class="mb-2"><strong>性別：</strong>${r.gender || "-"}</div>
+            <div class="mb-2"><strong>運動類型：</strong><span class="badge bg-info text-dark">${typeLabel}</span></div>
+            <div class="mb-2"><strong>器材：</strong>${r.machine_name || r.machine_code || "-"}</div>
+            <div class="mb-2"><strong>器材編號：</strong>${r.machine_number || "-"}</div>
+          </div>
+          <div class="col-md-6">
+            <div class="mb-2"><strong>日期：</strong>${r.measure_date || "-"}</div>
+            <div class="mb-2"><strong>時間：</strong>${r.measure_time || "-"}</div>
+            <div class="mb-2"><strong>時長（秒）：</strong>${r.duration_sec ?? "-"}</div>
+            <div class="mb-2"><strong>次數：</strong>${r.reps ?? "-"}</div>
+            <div class="mb-2"><strong>熱量（kcal）：</strong>${r.calories ?? "-"}</div>
+            <div class="mb-2"><strong>距離（km）：</strong>${r.distance_km ?? "-"}</div>
+            <div class="mb-2"><strong>達成率：</strong>${r.achievement_rate != null ? r.achievement_rate + "%" : "-"}</div>
+          </div>
+        </div>
+        <hr>
+        <div class="mb-2"><strong>摘要：</strong></div>
+        <div class="p-2 bg-light rounded">${r.summary || "無"}</div>
+        ${r.extra ? `<div class="mt-2"><strong>額外資訊：</strong><pre class="small bg-light p-2 rounded">${r.extra}</pre></div>` : ""}
+        <div class="mt-3 text-muted small">來源：${r.source || "-"}　建立時間：${r.created_at || "-"}</div>
+      </div>
+    </div>
+  `;
+}
 function deleteCurrentCase() {
   if (!currentCaseId) return alert("尚未選擇個案");
   const nameEl = document.getElementById("caseName");
