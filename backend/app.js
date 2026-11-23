@@ -1602,7 +1602,6 @@ async function handleAlert(id) {
   const note = prompt("處理說明（可留空）：", "已關懷個案並紀錄");
   if (note === null) return;
 
-  // 樂觀更新：先把畫面標記為已處理
   const btn = document.querySelector(`button[onclick="handleAlert(${id})"]`);
   const card = btn?.closest(".card");
   if (card) {
@@ -1615,11 +1614,18 @@ async function handleAlert(id) {
 
   try {
     await api(`/api/alerts/${id}/handle?note=${encodeURIComponent(note)}`, { method: "POST" });
-    // 成功後再重新載入（現在後端已優化，應該很快）
-    await loadAlerts();
+
+    // 成功後只更新目前這張卡片，不跳回列表
+    if (btn) {
+      btn.outerHTML = `<span class="badge bg-success ms-1">已處理 by ${window.currentUser?.username || "me"}</span>`;
+    }
+    if (card) {
+      card.style.opacity = "1";
+      card.classList.add("border-success");
+    }
+
   } catch (e) {
     alert(e.message);
-    // 失敗則恢復
     if (card) card.style.opacity = "1";
     if (btn) {
       btn.disabled = false;
