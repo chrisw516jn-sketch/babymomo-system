@@ -899,7 +899,8 @@ if (box) {
   let note = m.note || "";
 let noteHtml = "";
 
-noteHtml = `<input class="form-control form-control-sm mt-1" placeholder="輸入空白原因..." value="${loadMetricNote(currentCaseId, m.label)}" onchange="saveMetricNote('${currentCaseId}', '${m.label}', this.value)" style="font-size:12px">`;
+if (m.val == null || m.val === "" || m.val === "-") {
+  noteHtml = `<input class="form-control form-control-sm mt-1" placeholder="輸入空白原因..." value="${loadMetricNote(currentCaseId, m.label)}" onchange="saveMetricNote('${currentCaseId}', '${m.label}', this.value)" style="font-size:12px">`;
 } else if (m.std != null && m.val != null && !note) {
   const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
   note = pass ? "達標" : "未達標";
