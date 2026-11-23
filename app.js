@@ -1574,11 +1574,30 @@ function vitalCard(label, value, unit, fail, hint) {
 async function handleAlert(id) {
   const note = prompt("處理說明（可留空）：", "已關懷個案並紀錄");
   if (note === null) return;
+
+  // 樂觀更新：先把畫面標記為已處理
+  const btn = document.querySelector(`button[onclick="handleAlert(${id})"]`);
+  const card = btn?.closest(".card");
+  if (card) {
+    card.style.opacity = "0.6";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = "處理中...";
+    }
+  }
+
   try {
     await api(`/api/alerts/${id}/handle?note=${encodeURIComponent(note)}`, { method: "POST" });
-    loadAlerts();
+    // 成功後再重新載入（現在後端已優化，應該很快）
+    await loadAlerts();
   } catch (e) {
     alert(e.message);
+    // 失敗則恢復
+    if (card) card.style.opacity = "1";
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = "標記已關懷";
+    }
   }
 }
 
@@ -1589,52 +1608,28 @@ async function batchHandleSelected() {
     return;
   }
   const note = prompt("批次處理說明：", "批次標記已關懷") || "批次標記已關懷";
+
+  // 樂觀更新
+  document.querySelectorAll(".alert-check:checked").forEach((cb) => {
+    const card = cb.closest(".card");
+    if (card) card.style.opacity = "0.5";
+  });
+
   try {
     const r = await api("/api/alerts/batch-handle", {
       method: "POST",
       body: JSON.stringify({ ids, note }),
     });
     alert(`已處理 ${r.handled} 筆`);
-    loadAlerts();
+    await loadAlerts();
   } catch (e) {
     alert(e.message);
+    document.querySelectorAll(".alert-check:checked").forEach((cb) => {
+      const card = cb.closest(".card");
+      if (card) card.style.opacity = "1";
+    });
   }
 }
-
-async function pushAlertLine(id) {
-  try {
-    const r = await api(`/api/alerts/${id}/line`, { method: "POST" });
-    alert(r.ok ? "已送出 LINE" : (r.reason || r.error || "送出失敗"));
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-async function sendLineTest() {
-  const box = document.getElementById("lineTestResult");
-  if (box) box.innerHTML = '<div class="alert alert-info">傳送中...</div>';
-  try {
-    const r = await api("/api/alerts/line-test", { method: "POST" });
-    const preview = (r.preview || "").replace(/</g, "&lt;");
-    if (r.ok) {
-      box.innerHTML = `<div class="alert alert-success">已送到 LINE。<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
-    } else {
-      box.innerHTML = `<div class="alert alert-warning">模擬預覽<br>${r.reason || ""}<pre class="mb-0 mt-2 small">${preview}</pre></div>`;
-    }
-  } catch (e) {
-    if (box) box.innerHTML = `<div class="alert alert-danger">${e.message}</div>`;
-  }
-}
-
-async function sendDailySummary() {
-  try {
-    const r = await api("/api/alerts/daily-summary", { method: "POST" });
-    alert(r.ok ? "每日摘要已送到 LINE" : (r.reason || "送出失敗"));
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
 function showCreateUser() {
   const box = document.getElementById("createUserBox");
   box.style.display = box.style.display === "none" ? "block" : "none";
