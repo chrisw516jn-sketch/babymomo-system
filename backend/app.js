@@ -899,10 +899,10 @@ if (box) {
   let note = m.note || "";
 let noteHtml = "";
 
-if (m.val == null || m.val === "" || m.val === "-") {
-  noteHtml = `<input class="form-control form-control-sm mt-1" placeholder="輸入空白原因..." 
-    onchange="saveMetricNote('${currentCaseId}', '${m.label}', this.value)" 
-    style="font-size:12px">`;
+noteHtml = `<input class="form-control form-control-sm mt-1" placeholder="輸入空白原因..." 
+  value="${loadMetricNote(currentCaseId, m.label)}"
+  onchange="saveMetricNote('${currentCaseId}', '${m.label}', this.value)" 
+  style="font-size:12px">`;
 } else if (m.std != null && m.val != null && !note) {
   const pass = m.higherBetter ? Number(m.val) >= m.std : Number(m.val) < m.std;
   note = pass ? "達標" : "未達標";
@@ -2154,4 +2154,19 @@ async function submitFeedback() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+function saveMetricNote(idCard, label, note) {
+  if (!note.trim()) return;
+  const key = `metric_note_${idCard}_${label}`;
+  localStorage.setItem(key, note.trim());
+  const el = event?.target;
+  if (el) {
+    el.style.borderColor = "#198754";
+    setTimeout(() => el.style.borderColor = "", 1000);
+  }
+}
+
+function loadMetricNote(idCard, label) {
+  const key = `metric_note_${idCard}_${label}`;
+  return localStorage.getItem(key) || "";
 }
