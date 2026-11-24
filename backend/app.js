@@ -817,19 +817,33 @@ async function deleteCase(idCard, userName) {
   const name = userName || idCard;
   const msg = `確定要刪除個案「${name}」（${idCard}）的全部資料嗎？\n\n此動作會永久刪除：\n• 所有檢測紀錄\n• 相關異常通報\n• 運動輔具紀錄\n• 客製建議\n\n刪除後無法復原！`;
   if (!confirm(msg)) return;
+
+  // 先找到要刪除的卡片
+  const card = document.querySelector(`[data-idcard="${idCard}"]`) || 
+               document.querySelector(`button[onclick*="${idCard}"]`)?.closest(".card");
+
   try {
     const res = await api(`/api/cases/${encodeURIComponent(idCard)}`, { method: "DELETE" });
-    alert(`已成功刪除個案 ${name}\n\n刪除檢測紀錄：${res.deleted_measurements || 0} 筆`);
-    // 重新整理相關畫面
-    if (typeof loadCases === "function") loadCases();
+    
+    // 直接從畫面移除卡片，不重新載入
+    if (card) {
+      card.style.transition = "opacity 0.3s";
+      card.style.opacity = "0";
+      setTimeout(() => card.remove(), 300);
+    }
+    
+    // 更新筆數顯示
+    const countEl = document.querySelector("#view-cases .small, #caseTotal");
+    if (countEl && countEl.textContent.includes("位個案")) {
+      const match = countEl.textContent.match(/(\d+)/);
+      if (match) countEl.textContent = `共 ${parseInt(match[1]) - 1} 位個案`;
+    }
+    
     closeCase();
-    if (typeof loadRecords === "function") loadRecords();
-    if (typeof loadDashboard === "function") loadDashboard();
   } catch (e) {
     alert("刪除失敗：" + (e.message || String(e)));
   }
 }
-
 async function deleteExercise(id) {
   if (!confirm("確定刪除此筆運動紀錄？")) return;
   try {
