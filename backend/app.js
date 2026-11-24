@@ -733,20 +733,15 @@ async function loadExercises() {
       const tr = document.createElement("tr");
       tr.style.cursor = "pointer";
       tr.onclick = () => showExerciseDetail(r);
-      tr.innerHTML = `
-        <td class="small">${r.measure_time || r.measure_date || "-"}</td>
-        <td class="text-primary small">${r.id_card || "-"}</td>
-        <td>${r.user_name || "-"}</td>
-        <td><span class="badge bg-info text-dark">${EX_TYPE_LABEL[r.exercise_type] || r.exercise_type || "-"}</span></td>
-        <td>${r.machine_name || r.machine_code || "-"}</td>
-        <td>${r.duration_sec != null ? r.duration_sec : "-"}</td>
-        <td>${r.reps != null ? r.reps : "-"}</td>
-        <td>${r.calories != null ? r.calories : "-"}</td>
-        <td>${r.distance_km != null ? r.distance_km : "-"}</td>
-        <td>${r.achievement_rate != null ? r.achievement_rate : "-"}</td>
-        <td class="small text-muted" style="max-width:220px">${r.summary || "-"}</td>
-        <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();deleteExercise(${r.id})">刪除</button></td>
-      `;
+     function formatSummary(summary) {
+  if (!summary) return "-";
+  // 把「時間180秒 次數116 消耗12.99kcal 達成率100%」拆開顯示
+  return summary
+    .replace(/時間(\d+\.?\d*)秒/g, '<span class="badge bg-secondary me-1">時間 $1秒</span>')
+    .replace(/次數(\d+\.?\d*)/g, '<span class="badge bg-secondary me-1">次數 $1</span>')
+    .replace(/消耗(\d+\.?\d*)kcal/g, '<span class="badge bg-warning text-dark me-1">$1 kcal</span>')
+    .replace(/達成率(\d+\.?\d*)%/g, '<span class="badge bg-success me-1">達成 $1%</span>');
+}
       tbody.appendChild(tr);
     });
     const info = document.getElementById("exPagerInfo");
