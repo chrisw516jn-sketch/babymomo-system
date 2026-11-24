@@ -733,15 +733,20 @@ async function loadExercises() {
       const tr = document.createElement("tr");
       tr.style.cursor = "pointer";
       tr.onclick = () => showExerciseDetail(r);
-     function formatSummary(summary) {
-  if (!summary) return "-";
-  // 把「時間180秒 次數116 消耗12.99kcal 達成率100%」拆開顯示
-  return summary
-    .replace(/時間(\d+\.?\d*)秒/g, '<span class="badge bg-secondary me-1">時間 $1秒</span>')
-    .replace(/次數(\d+\.?\d*)/g, '<span class="badge bg-secondary me-1">次數 $1</span>')
-    .replace(/消耗(\d+\.?\d*)kcal/g, '<span class="badge bg-warning text-dark me-1">$1 kcal</span>')
-    .replace(/達成率(\d+\.?\d*)%/g, '<span class="badge bg-success me-1">達成 $1%</span>');
-}
+tr.innerHTML = `
+  <td class="small">${r.measure_time || r.measure_date || "-"}</td>
+  <td class="text-primary small">${r.id_card || "-"}</td>
+  <td>${r.user_name || "-"}</td>
+  <td><span class="badge bg-info text-dark">${EX_TYPE_LABEL[r.exercise_type] || r.exercise_type || "-"}</span></td>
+  <td>${r.machine_name || r.machine_code || "-"}</td>
+  <td class="text-center">${r.duration_sec != null ? r.duration_sec + " 秒" : "-"}</td>
+  <td class="text-center">${r.reps != null ? r.reps + " 次" : "-"}</td>
+  <td class="text-center">${r.calories != null ? r.calories + " kcal" : "-"}</td>
+  <td class="text-center">${r.distance_km != null ? r.distance_km + " km" : "-"}</td>
+  <td class="text-center">${r.achievement_rate != null ? r.achievement_rate + "%" : "-"}</td>
+  <td class="small">${formatSummary(r.summary)}</td>
+  <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();deleteExercise(${r.id})">刪除</button></td>
+`;
       tbody.appendChild(tr);
     });
     const info = document.getElementById("exPagerInfo");
@@ -2162,4 +2167,12 @@ function saveMetricNote(idCard, label, note) {
 function loadMetricNote(idCard, label) {
   const key = `metric_note_${idCard}_${label}`;
   return localStorage.getItem(key) || "";
+}
+function formatSummary(summary) {
+  if (!summary) return "-";
+  return summary
+    .replace(/時間(\d+\.?\d*)秒/g, '<span class="badge bg-secondary me-1">時間 $1秒</span>')
+    .replace(/次數(\d+\.?\d*)/g, '<span class="badge bg-secondary me-1">次數 $1</span>')
+    .replace(/消耗(\d+\.?\d*)kcal/g, '<span class="badge bg-warning text-dark me-1">$1 kcal</span>')
+    .replace(/達成率(\d+\.?\d*)%/g, '<span class="badge bg-success me-1">達成 $1%</span>');
 }
