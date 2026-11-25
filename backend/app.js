@@ -2197,4 +2197,3 @@ function formatSummary(summary) {
   
   return badges.join("") || "-";
 }
-}
