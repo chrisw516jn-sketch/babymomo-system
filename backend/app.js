@@ -968,16 +968,16 @@ if (m.val == null || m.val === "" || m.val === "-") {
           <td class="small">${it.calories != null ? it.calories : "-"}</td>
         </tr>`
       ).join("");
-// 統計每台機器：次數 + 總分鐘
+// 統計每台機器：總分鐘 + 總次數
 const machineStats = {};
 (ex.items || []).forEach((it) => {
   const name = it.machine_name || it.type || "其他";
-  if (!machineStats[name]) machineStats[name] = { count: 0, minutes: 0 };
-  machineStats[name].count += 1;
+  if (!machineStats[name]) machineStats[name] = { minutes: 0, reps: 0 };
   machineStats[name].minutes += (it.duration_sec || 0) / 60;
+  machineStats[name].reps += (it.reps || 0);
 });
 const machineSummary = Object.entries(machineStats)
-  .map(([name, s]) => `<span class="badge bg-secondary me-1">${name} ${s.count}次 · ${Math.round(s.minutes * 10) / 10}分</span>`)
+  .map(([name, s]) => `<span class="badge bg-secondary me-1">${name} 共${Math.round(s.minutes * 10) / 10}分 · ${s.reps}下</span>`)
   .join("");
       progBox.innerHTML = `
         <div class="card border-primary border-opacity-25 shadow-sm">
