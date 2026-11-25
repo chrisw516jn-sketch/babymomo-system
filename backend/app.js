@@ -739,11 +739,6 @@ tr.innerHTML = `
   <td>${r.user_name || "-"}</td>
   <td><span class="badge bg-info text-dark">${EX_TYPE_LABEL[r.exercise_type] || r.exercise_type || "-"}</span></td>
   <td>${r.machine_name || r.machine_code || "-"}</td>
-  <td class="text-center">${r.duration_sec != null ? r.duration_sec + " 秒" : "-"}</td>
-  <td class="text-center">${r.reps != null ? r.reps + " 次" : "-"}</td>
-  <td class="text-center">${r.calories != null ? r.calories + " kcal" : "-"}</td>
-  <td class="text-center">${r.distance_km != null ? r.distance_km + " km" : "-"}</td>
-  <td class="text-center">${r.achievement_rate != null ? r.achievement_rate + "%" : "-"}</td>
   <td class="small">${formatSummary(r.summary)}</td>
   <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();deleteExercise(${r.id})">刪除</button></td>
 `;
@@ -973,6 +968,15 @@ if (m.val == null || m.val === "" || m.val === "-") {
           <td class="small">${it.calories != null ? it.calories : "-"}</td>
         </tr>`
       ).join("");
+// 統計每台機器使用次數（貼在這裡）
+const machineCount = {};
+(ex.items || []).forEach((it) => {
+  const name = it.machine_name || it.type || "其他";
+  machineCount[name] = (machineCount[name] || 0) + 1;
+});
+const machineSummary = Object.entries(machineCount)
+  .map(([name, cnt]) => `<span class="badge bg-secondary me-1">${name} ${cnt}次</span>`)
+  .join("");
       progBox.innerHTML = `
         <div class="card border-primary border-opacity-25 shadow-sm">
           <div class="card-header bg-primary bg-opacity-10 py-2 d-flex flex-wrap justify-content-between align-items-center gap-2">
@@ -1001,7 +1005,8 @@ if (m.val == null || m.val === "" || m.val === "-") {
             <div class="rounded p-3 mb-2" style="background:#f0f9ff">
               <div class="fw-semibold small mb-1"><i class="bi bi-bicycle me-1"></i>期間運動（前測日至後測日）</div>
               <div class="small">共 <b>${ex.sessions || 0}</b> 次 · 約 <b>${ex.total_duration_min || 0}</b> 分鐘 · 熱量 <b>${ex.total_calories || 0}</b> kcal</div>
-              <div class="small text-muted">類型：${typeLines}</div>
+              <div class="small text-muted">類型：${typeLines}</div
+<div class="mt-1">${machineSummary}</div>
             </div>
             ${exRows ? `<div class="table-responsive"><table class="table table-sm mb-0">
               <thead class="table-light"><tr><th>日期</th><th>器材／類型</th><th>時數</th><th>kcal</th></tr></thead>
