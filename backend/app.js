@@ -744,6 +744,7 @@ tr.innerHTML = `
   <td class="text-center">${r.calories != null ? r.calories + " kcal" : "-"}</td>
   <td class="text-center">${r.distance_km != null ? r.distance_km + " km" : "-"}</td>
   <td class="text-center">${r.achievement_rate != null ? r.achievement_rate + "%" : "-"}</td>
+  <td class="small">${formatSummary(r.summary)}</td>
   <td><button class="btn btn-sm btn-outline-danger" onclick="event.stopPropagation();deleteExercise(${r.id})">刪除</button></td>
 `;
       tbody.appendChild(tr);
@@ -2189,7 +2190,6 @@ function formatSummary(summary) {
   const repsMatch = summary.match(/次數(\d+\.?\d*)/);
   const calMatch = summary.match(/消耗(\d+\.?\d*)kcal/);
   const rateMatch = summary.match(/達成率(\d+\.?\d*)%/);
-  <td class="small">${formatSummary(r.summary)}</td>
   if (timeMatch) badges.push(`<span class="badge bg-secondary me-1">時間 ${timeMatch[1]}秒</span>`);
   if (repsMatch) badges.push(`<span class="badge bg-secondary me-1">次數 ${repsMatch[1]}</span>`);
   if (calMatch) badges.push(`<span class="badge bg-warning text-dark me-1">${calMatch[1]} kcal</span>`);
