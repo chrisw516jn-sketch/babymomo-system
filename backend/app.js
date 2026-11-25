@@ -2183,9 +2183,18 @@ function loadMetricNote(idCard, label) {
 }
 function formatSummary(summary) {
   if (!summary) return "-";
-  return summary
-    .replace(/時間(\d+\.?\d*)秒/g, '<span class="badge bg-secondary me-1">時間 $1秒</span>')
-    .replace(/次數(\d+\.?\d*)/g, '<span class="badge bg-secondary me-1">次數 $1</span>')
-    .replace(/消耗(\d+\.?\d*)kcal/g, '<span class="badge bg-warning text-dark me-1">$1 kcal</span>')
-    .replace(/達成率(\d+\.?\d*)%/g, '<span class="badge bg-success me-1">達成 $1%</span>');
+  // 只保留徽章，移除純文字
+  const badges = [];
+  const timeMatch = summary.match(/時間(\d+\.?\d*)秒/);
+  const repsMatch = summary.match(/次數(\d+\.?\d*)/);
+  const calMatch = summary.match(/消耗(\d+\.?\d*)kcal/);
+  const rateMatch = summary.match(/達成率(\d+\.?\d*)%/);
+  
+  if (timeMatch) badges.push(`<span class="badge bg-secondary me-1">時間 ${timeMatch[1]}秒</span>`);
+  if (repsMatch) badges.push(`<span class="badge bg-secondary me-1">次數 ${repsMatch[1]}</span>`);
+  if (calMatch) badges.push(`<span class="badge bg-warning text-dark me-1">${calMatch[1]} kcal</span>`);
+  if (rateMatch) badges.push(`<span class="badge bg-success me-1">達成 ${rateMatch[1]}%</span>`);
+  
+  return badges.join("") || "-";
+}
 }
